@@ -3,5 +3,8 @@
 .build_hash
 server
 server.exe
-data/
+/data/accounts.json
+/data/signatures/*
+!/data/signatures/.gitkeep
+!/data/.gitkeep
 *.log
