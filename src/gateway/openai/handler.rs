@@ -246,6 +246,7 @@ pub async fn handle_chat_completions(
     };
 
     let out = to_chat_completion(&vresp, &model, &request_id, &state.sig_mgr).await;
+
     if state.cfg.client_log_enabled()
         && let Ok(v) = sonic_rs::to_value(&out)
     {

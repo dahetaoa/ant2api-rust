@@ -87,6 +87,14 @@ async fn to_vertex_contents(
     req: &mut ChatRequest,
     sig_mgr: &SignatureManager,
 ) -> anyhow::Result<Vec<Content>> {
+    // 特例修复：Claude/Gemini 在极少数情况下会返回“纯工具调用”（assistant 只有 tool_calls，
+    // 没有正文/没有 reasoning），并且后端要求“只要出现工具调用，就必须带思维签名”。
+    //
+    // 我们禁止注入任何虚拟 thoughtSignature（会污染后端校验与状态），而是把这条“纯工具调用”
+    // 合并到上一轮（同一次请求历史里）真实带思维签名的 assistant 轮次中，作为并行 tool_calls
+    // 一并发给后端，从而通过校验并保持状态连续性。
+    merge_tool_only_assistant_messages(req, sig_mgr).await;
+
     let mut out: Vec<Content> = Vec::new();
 
     let model = req.model.trim();
@@ -126,19 +134,13 @@ async fn to_vertex_contents(
                     if injected_text.is_empty() {
                         injected_text = first_tool_reasoning.trim().to_string();
                     }
-                    let mut injected_sig = first_tool_sig;
+                    let injected_sig = first_tool_sig;
 
                     if !injected_sig.is_empty()
                         && injected_text.is_empty()
                         && !m.tool_calls.is_empty()
                     {
                         injected_text = "[missing thought text]".to_string();
-                    }
-                    if injected_sig.is_empty() && !m.tool_calls.is_empty() {
-                        injected_sig = "context_engineering_is_the_way_to_go".to_string();
-                        if injected_text.is_empty() {
-                            injected_text = "[missing thought text]".to_string();
-                        }
                     }
                     if !injected_sig.is_empty() && !injected_text.is_empty() {
                         parts.push(Part {
@@ -249,6 +251,76 @@ async fn to_vertex_contents(
     }
 
     Ok(out)
+}
+
+fn is_tool_only_assistant_message(m: &Message) -> bool {
+    if m.role != "assistant" || m.tool_calls.is_empty() {
+        return false;
+    }
+    if !m.reasoning.trim().is_empty() || !m.reasoning_content.trim().is_empty() {
+        return false;
+    }
+    match m.content.as_str() {
+        Some(s) => s.trim().is_empty(),
+        None => extract_text_from_content(&m.content, "\n", false)
+            .trim()
+            .is_empty(),
+    }
+}
+
+async fn has_signature_for_first_tool_call(sig_mgr: &SignatureManager, m: &Message) -> bool {
+    let Some(tc0) = m.tool_calls.first() else {
+        return false;
+    };
+    let id = tc0.id.trim();
+    if id.is_empty() {
+        return false;
+    }
+    sig_mgr.cache().get_by_tool_call_id(id).await.is_some()
+}
+
+async fn merge_tool_only_assistant_messages(req: &mut ChatRequest, sig_mgr: &SignatureManager) {
+    let mut i = 0usize;
+    while i < req.messages.len() {
+        if !is_tool_only_assistant_message(&req.messages[i]) {
+            i += 1;
+            continue;
+        }
+
+        // 仅处理“纯工具调用 + tool 结果紧随其后”的回传；避免误伤未执行工具的中间态。
+        if i + 1 >= req.messages.len() || req.messages[i + 1].role != "tool" {
+            i += 1;
+            continue;
+        }
+
+        // 若本轮 tool_call 已有签名（服务端缓存命中），则无需合并。
+        if has_signature_for_first_tool_call(sig_mgr, &req.messages[i]).await {
+            i += 1;
+            continue;
+        }
+
+        // 向前找“上一轮真实带签名的 assistant 工具调用”，把当前纯 tool_calls 合并进去。
+        let mut anchor: Option<usize> = None;
+        for j in (0..i).rev() {
+            let m = &req.messages[j];
+            if m.role != "assistant" || m.tool_calls.is_empty() {
+                continue;
+            }
+            if has_signature_for_first_tool_call(sig_mgr, m).await {
+                anchor = Some(j);
+                break;
+            }
+        }
+
+        let Some(anchor) = anchor else {
+            i += 1;
+            continue;
+        };
+
+        let calls = std::mem::take(&mut req.messages[i].tool_calls);
+        req.messages[anchor].tool_calls.extend(calls);
+        req.messages.remove(i);
+    }
 }
 
 async fn extract_user_parts(
