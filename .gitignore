@@ -1,0 +1,7 @@
+/target
+.env
+.build_hash
+server
+server.exe
+data/
+*.log

@@ -1,0 +1,408 @@
+use crate::config::Config;
+use crate::logging;
+use crate::vertex::types::{Request, Response};
+use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HOST, HeaderMap, HeaderValue, USER_AGENT};
+use sonic_rs::JsonValueTrait;
+use std::collections::HashMap;
+use std::time::Duration;
+use thiserror::Error;
+
+#[derive(Debug, Clone)]
+pub struct Endpoint {
+    pub key: String,
+    pub host: String,
+}
+
+impl Endpoint {
+    pub fn stream_url(&self) -> String {
+        format!(
+            "https://{}/v1internal:streamGenerateContent?alt=sse",
+            self.host
+        )
+    }
+
+    pub fn no_stream_url(&self) -> String {
+        format!("https://{}/v1internal:generateContent", self.host)
+    }
+
+    pub fn fetch_available_models_url(&self) -> String {
+        format!("https://{}/v1internal:fetchAvailableModels", self.host)
+    }
+}
+
+#[derive(Debug, Error)]
+pub enum ApiError {
+    #[error("Vertex API 错误 {status}: {message}")]
+    Http {
+        status: u16,
+        message: String,
+        retry_delay: Duration,
+        disable_token: bool,
+    },
+
+    #[error(transparent)]
+    Transport(#[from] reqwest::Error),
+
+    #[error(transparent)]
+    Json(#[from] sonic_rs::Error),
+}
+
+impl ApiError {
+    pub fn status(&self) -> Option<u16> {
+        match self {
+            Self::Http { status, .. } => Some(*status),
+            _ => None,
+        }
+    }
+
+    pub fn retry_delay(&self) -> Option<Duration> {
+        match self {
+            Self::Http { retry_delay, .. } if *retry_delay != Duration::ZERO => Some(*retry_delay),
+            _ => None,
+        }
+    }
+
+    pub fn disable_token(&self) -> bool {
+        match self {
+            Self::Http { disable_token, .. } => *disable_token,
+            _ => false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct VertexClient {
+    http: reqwest::Client,
+    retry_status_codes: Vec<u16>,
+    retry_max_attempts: usize,
+    user_agent: String,
+    log_level: logging::LogLevel,
+}
+
+impl VertexClient {
+    pub fn new(cfg: &Config) -> Result<Self, anyhow::Error> {
+        let mut builder = reqwest::Client::builder()
+            .pool_max_idle_per_host(10)
+            .pool_idle_timeout(Duration::from_secs(90))
+            // 对齐 Go 版本：禁用 HTTP/2（Go 端 ForceAttemptHTTP2=false）。
+            // 该后端在 HTTP/2 + Host 头组合下可能触发 PROTOCOL_ERROR。
+            .http1_only();
+
+        let timeout = if cfg.timeout_ms > 0 {
+            Some(Duration::from_millis(cfg.timeout_ms))
+        } else {
+            None
+        };
+        if let Some(t) = timeout {
+            builder = builder.timeout(t);
+        }
+
+        if !cfg.proxy.trim().is_empty() {
+            builder = builder.proxy(reqwest::Proxy::all(cfg.proxy.trim())?);
+        }
+
+        let http = builder.build()?;
+        Ok(Self {
+            http,
+            retry_status_codes: cfg.retry_status_codes.clone(),
+            retry_max_attempts: cfg.retry_max_attempts.max(1),
+            user_agent: cfg.api_user_agent.clone(),
+            log_level: cfg.log_level(),
+        })
+    }
+
+    pub fn build_headers(&self, access_token: &str, endpoint: &Endpoint) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert(
+            HOST,
+            HeaderValue::from_str(&endpoint.host).unwrap_or(HeaderValue::from_static("")),
+        );
+        h.insert(
+            USER_AGENT,
+            HeaderValue::from_str(&self.user_agent).unwrap_or(HeaderValue::from_static("ant2api")),
+        );
+        h.insert(
+            AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {access_token}"))
+                .unwrap_or(HeaderValue::from_static("")),
+        );
+        h.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        h.insert(
+            reqwest::header::ACCEPT_ENCODING,
+            HeaderValue::from_static("gzip"),
+        );
+        h
+    }
+
+    pub fn build_stream_headers(&self, access_token: &str, endpoint: &Endpoint) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert(
+            HOST,
+            HeaderValue::from_str(&endpoint.host).unwrap_or(HeaderValue::from_static("")),
+        );
+        h.insert(
+            USER_AGENT,
+            HeaderValue::from_str(&self.user_agent).unwrap_or(HeaderValue::from_static("ant2api")),
+        );
+        h.insert(
+            AUTHORIZATION,
+            HeaderValue::from_str(&format!("Bearer {access_token}"))
+                .unwrap_or(HeaderValue::from_static("")),
+        );
+        h.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        h
+    }
+
+    pub async fn generate_content(
+        &self,
+        endpoint: &Endpoint,
+        access_token: &str,
+        req: &Request,
+    ) -> Result<Response, ApiError> {
+        let url = endpoint.no_stream_url();
+        self.with_retry(|| async {
+            let body = sonic_rs::to_vec(req)?;
+            let headers = self.build_headers(access_token, endpoint);
+            if self.log_level.backend_enabled() {
+                logging::backend_request("POST", &url, &headers, &body);
+            }
+            let start = std::time::Instant::now();
+            let resp = self
+                .http
+                .post(url.clone())
+                .headers(headers)
+                .body(body)
+                .send()
+                .await?;
+
+            let status = resp.status();
+            let bytes = resp.bytes().await?;
+            if self.log_level.backend_enabled() {
+                logging::backend_response(status.as_u16(), start.elapsed(), &bytes);
+            }
+            if !status.is_success() {
+                return Err(extract_error_details(status.as_u16(), &bytes));
+            }
+            Ok(sonic_rs::from_slice::<Response>(&bytes)?)
+        })
+        .await
+    }
+
+    pub async fn generate_content_stream(
+        &self,
+        endpoint: &Endpoint,
+        access_token: &str,
+        req: &Request,
+    ) -> Result<reqwest::Response, ApiError> {
+        let url = endpoint.stream_url();
+        self.with_retry(|| async {
+            let body = sonic_rs::to_vec(req)?;
+            let headers = self.build_stream_headers(access_token, endpoint);
+            if self.log_level.backend_enabled() {
+                logging::backend_request("POST", &url, &headers, &body);
+            }
+            let start = std::time::Instant::now();
+            let resp = self
+                .http
+                .post(url.clone())
+                .headers(headers)
+                .body(body)
+                .send()
+                .await?;
+
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let bytes = resp.bytes().await?;
+                if self.log_level.backend_enabled() {
+                    logging::backend_response(status.as_u16(), start.elapsed(), &bytes);
+                }
+                return Err(extract_error_details(status.as_u16(), &bytes));
+            }
+            Ok(resp)
+        })
+        .await
+    }
+
+    pub async fn fetch_available_models(
+        &self,
+        endpoint: &Endpoint,
+        project: &str,
+        access_token: &str,
+    ) -> Result<AvailableModelsResponse, ApiError> {
+        let url = endpoint.fetch_available_models_url();
+        let body = sonic_rs::to_vec(&serde_payload_project(project))?;
+        let headers = self.build_headers(access_token, endpoint);
+        let start = std::time::Instant::now();
+        if self.log_level.backend_enabled() {
+            logging::backend_request("POST", &url, &headers, &body);
+        }
+
+        let resp = self
+            .http
+            .post(url)
+            .headers(headers)
+            .body(body)
+            .send()
+            .await?;
+
+        let status = resp.status();
+        let bytes = resp.bytes().await?;
+        if self.log_level.backend_enabled() {
+            logging::backend_response(status.as_u16(), start.elapsed(), &bytes);
+        }
+        if !status.is_success() {
+            return Err(extract_error_details(status.as_u16(), &bytes));
+        }
+        Ok(sonic_rs::from_slice::<AvailableModelsResponse>(&bytes)?)
+    }
+
+    async fn with_retry<F, Fut, T>(&self, mut op: F) -> Result<T, ApiError>
+    where
+        F: FnMut() -> Fut,
+        Fut: std::future::Future<Output = Result<T, ApiError>>,
+    {
+        let mut last_err: Option<ApiError> = None;
+
+        for attempt in 0..self.retry_max_attempts {
+            match op().await {
+                Ok(v) => return Ok(v),
+                Err(err) => {
+                    let status = err.status();
+                    // 非 API 错误（例如网络错误/JSON 错误）：直接返回。
+                    if status.is_none() {
+                        return Err(err);
+                    }
+
+                    // 401：不重试（与 Go 版本一致）。
+                    if status == Some(401) {
+                        return Err(err);
+                    }
+
+                    last_err = Some(err);
+
+                    let Some(status) = status else {
+                        break;
+                    };
+                    let should_retry = self.retry_status_codes.contains(&status);
+                    if !should_retry || attempt + 1 == self.retry_max_attempts {
+                        break;
+                    }
+
+                    let delay = last_err
+                        .as_ref()
+                        .and_then(|e| e.retry_delay())
+                        .unwrap_or_else(|| {
+                            let ms = (1_000u64 * (attempt as u64 + 1)).min(5_000);
+                            Duration::from_millis(ms)
+                        });
+                    tokio::time::sleep(delay).await;
+                }
+            }
+        }
+
+        Err(last_err.unwrap_or(ApiError::Http {
+            status: 500,
+            message: "未知错误".to_string(),
+            retry_delay: Duration::ZERO,
+            disable_token: false,
+        }))
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct ProjectPayload<'a> {
+    project: &'a str,
+}
+
+fn serde_payload_project(project: &str) -> ProjectPayload<'_> {
+    ProjectPayload { project }
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct AvailableModelsResponse {
+    pub models: HashMap<String, sonic_rs::Value>,
+}
+
+fn extract_error_details(status: u16, body: &[u8]) -> ApiError {
+    #[derive(Debug, serde::Deserialize)]
+    struct ErrResp {
+        error: ErrInner,
+    }
+
+    #[derive(Debug, serde::Deserialize)]
+    struct ErrInner {
+        #[serde(default)]
+        code: Option<sonic_rs::Value>,
+        #[serde(default)]
+        message: String,
+        #[serde(default)]
+        details: Vec<ErrDetail>,
+    }
+
+    #[derive(Debug, serde::Deserialize)]
+    struct ErrDetail {
+        #[serde(rename = "@type", default)]
+        ty: String,
+        #[serde(default)]
+        retry_delay: String,
+    }
+
+    let mut out_status = status;
+    let mut message = "Unknown error".to_string();
+    let mut retry_delay = Duration::ZERO;
+    let mut disable_token = false;
+
+    if let Ok(err_resp) = sonic_rs::from_slice::<ErrResp>(body) {
+        message = err_resp.error.message;
+
+        if let Some(code) = err_resp.error.code {
+            if let Some(s) = code.as_str() {
+                let up = s.to_uppercase();
+                match up.as_str() {
+                    "RESOURCE_EXHAUSTED" => out_status = 429,
+                    "INTERNAL" => out_status = 500,
+                    "UNAUTHENTICATED" => {
+                        out_status = 401;
+                        disable_token = true;
+                    }
+                    _ => {}
+                }
+            } else if let Some(i) = code.as_i64() {
+                if i > 0 && i <= u16::MAX as i64 {
+                    out_status = i as u16;
+                }
+            } else if let Some(f) = code.as_f64() {
+                let i = f as i64;
+                if i > 0 && i <= u16::MAX as i64 {
+                    out_status = i as u16;
+                }
+            }
+        }
+
+        for d in err_resp.error.details {
+            if d.ty.contains("RetryInfo")
+                && let Some(delay) = parse_retry_delay_seconds(&d.retry_delay)
+            {
+                retry_delay = delay;
+            }
+        }
+    }
+
+    ApiError::Http {
+        status: out_status,
+        message,
+        retry_delay,
+        disable_token,
+    }
+}
+
+fn parse_retry_delay_seconds(s: &str) -> Option<Duration> {
+    // 兼容形如 "2s" / "2.5s" / "0.123s"
+    let s = s.trim();
+    let s = s.strip_suffix('s')?;
+    let secs: f64 = s.trim().parse().ok()?;
+    if !(secs.is_finite() && secs >= 0.0) {
+        return None;
+    }
+    Some(Duration::from_secs_f64(secs))
+}
