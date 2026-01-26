@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{% block title %}Antigravity 2 API 管理面板{% endblock %}</title>
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap"
+        rel="stylesheet" />
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+
+        .htmx-indicator {
+            opacity: 0;
+            transition: opacity 200ms ease-in;
+        }
+
+        .htmx-request .htmx-indicator {
+            opacity: 1
+        }
+
+        .htmx-request.htmx-indicator {
+            opacity: 1
+        }
+
+        summary::-webkit-details-marker {
+            display: none;
+        }
+
+        summary::marker {
+            content: "";
+        }
+
+        @keyframes quotaPop {
+            0% {
+                transform: scale(0.96);
+                opacity: 0.75;
+            }
+
+            100% {
+                transform: scale(1);
+                opacity: 1;
+            }
+        }
+
+        @keyframes quotaBarPop {
+            0% {
+                transform: scaleY(0.6);
+                opacity: 0.7;
+            }
+
+            100% {
+                transform: scaleY(1);
+                opacity: 1;
+            }
+        }
+
+        .quota-pop {
+            animation: quotaPop 260ms ease-out;
+        }
+
+        .quota-bar-pop {
+            animation: quotaBarPop 320ms ease-out;
+            transform-origin: center;
+        }
+
+        /* Quota <details> Animation configuration */
+        details[data-quota-details]>summary {
+            list-style: none;
+        }
+
+        details[data-quota-details]>summary::-webkit-details-marker {
+            display: none;
+        }
+
+        details[data-quota-details] .quota-chevron {
+            transform: rotate(90deg);
+            transition: transform 260ms ease;
+        }
+
+        details[data-quota-details][open] .quota-chevron {
+            transform: rotate(0deg);
+        }
+
+        /* When closing, prevent the chevron from jumping back instantly by matching the closed state style, 
+           relying on the transition to animate it back to 90deg */
+        details[data-quota-details].is-closing .quota-chevron {
+            transform: rotate(90deg);
+        }
+
+        /* Base panel state (closed) */
+        details[data-quota-details] [data-quota-panel] {
+            display: grid;
+            grid-template-rows: 0fr;
+            margin-top: 0;
+            opacity: 0;
+            transform: translateY(-4px);
+            overflow: hidden;
+            /* Ensure the element participates in layout for animation */
+        }
+
+        /* Opening Animation */
+        details[data-quota-details][open] [data-quota-panel] {
+            animation: quotaSlideDown 260ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
+        }
+
+        /* Closing Animation */
+        details[data-quota-details].is-closing [data-quota-panel] {
+            animation: quotaSlideUp 260ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
+        }
+
+        @keyframes quotaSlideDown {
+            0% {
+                grid-template-rows: 0fr;
+                margin-top: 0;
+                opacity: 0;
+                transform: translateY(-4px);
+            }
+
+            100% {
+                grid-template-rows: 1fr;
+                margin-top: 0.75rem;
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        @keyframes quotaSlideUp {
+            0% {
+                grid-template-rows: 1fr;
+                margin-top: 0.75rem;
+                opacity: 1;
+                transform: translateY(0);
+            }
+
+            100% {
+                grid-template-rows: 0fr;
+                margin-top: 0;
+                opacity: 0;
+                transform: translateY(-4px);
+            }
+        }
+
+        details[data-quota-details] [data-quota-panel]>[data-quota-panel-inner] {
+            min-height: 0;
+        }
+
+        /* 顶部 Tab 切换过渡 */
+        .tab-panel {
+            transition: opacity 200ms ease, transform 200ms ease;
+            will-change: opacity, transform;
+        }
+
+        .tab-panel.tab-enter,
+        .tab-panel.tab-exit {
+            opacity: 0;
+            transform: translateY(6px);
+        }
+    </style>
+</head>
+
+<body class="bg-white text-slate-900 min-h-screen pt-14 pb-10">
+    {% block content %}{% endblock %}
+    <div id="toast-container" class="fixed top-20 right-5 z-50 flex flex-col gap-2"></div>
+    <script>
+        document.addEventListener("showMessage", function (evt) {
+            const msg = evt.detail.message;
+            const type = evt.detail.type || 'info';
+            const toast = document.createElement('div');
+
+            let bgClass = 'bg-blue-600';
+            if (type === 'error') bgClass = 'bg-red-600';
+            if (type === 'success') bgClass = 'bg-emerald-600';
+
+            toast.className = `p-4 rounded-lg shadow-lg text-white transform transition-all duration-300 translate-x-full opacity-0 ${bgClass}`;
+            toast.textContent = msg;
+
+            document.getElementById('toast-container').appendChild(toast);
+
+            // Animation in
+            requestAnimationFrame(() => {
+                toast.classList.remove('translate-x-full', 'opacity-0');
+            });
+
+            // Remove after 3s
+            setTimeout(() => {
+                toast.classList.add('translate-x-full', 'opacity-0');
+                setTimeout(() => toast.remove(), 300);
+            }, 3000);
+        }, { capture: true })
+    </script>
+    <script>
+            (function () {
+                // Handle smooth open/close animations for quota details
+                document.addEventListener('click', (e) => {
+                    const summary = e.target.closest('summary');
+                    if (!summary) return;
+
+                    const details = summary.parentElement;
+                    if (!details || !details.matches('details[data-quota-details]')) return;
+
+                    e.preventDefault();
+
+                    // If it is 'open' (and not already processing a close), we want to close it gracefully
+                    if (details.hasAttribute('open')) {
+                        if (details.classList.contains('is-closing')) return;
+
+                        details.classList.add('is-closing');
+                        const panel = details.querySelector('[data-quota-panel]');
+
+                        const onAnimationEnd = () => {
+                            details.removeAttribute('open');
+                            details.classList.remove('is-closing');
+                            if (panel) panel.removeEventListener('animationend', onAnimationEnd);
+                        };
+
+                        if (panel) {
+                            panel.addEventListener('animationend', onAnimationEnd, { once: true });
+                            // Fallback in case animation fails or interrupted
+                            setTimeout(onAnimationEnd, 300);
+                        } else {
+                            // No panel, close immediately
+                            onAnimationEnd();
+                        }
+                    } else {
+                        // Opening: just set the attribute, CSS animation handles the rest
+                        details.setAttribute('open', '');
+                    }
+                });
+
+                const scrollJobs = new WeakMap();
+
+                function clearJob(details) {
+                    const job = scrollJobs.get(details);
+                    if (!job) return;
+                    clearTimeout(job.t1);
+                    clearTimeout(job.t2);
+                    scrollJobs.delete(details);
+                }
+
+                function scrollQuotaIntoView(details) {
+                    clearJob(details);
+                    if (!details.open) return;
+
+                    const panel = details.querySelector('[data-quota-panel]');
+                    if (!panel) return;
+
+                    const margin = 16;
+                    const adjust = () => {
+                        const rect = panel.getBoundingClientRect();
+                        const overflow = rect.bottom - (window.innerHeight - margin);
+                        if (overflow > 0) {
+                            window.scrollBy({ top: overflow, behavior: 'smooth' });
+                        }
+                    };
+
+                    // 让 CSS 状态先落地，再开始滚动；并在动画结束后再补一次校正。
+                    const t1 = setTimeout(adjust, 0);
+                    const t2 = setTimeout(adjust, 320);
+                    scrollJobs.set(details, { t1, t2 });
+                }
+
+                document.addEventListener('toggle', (evt) => {
+                    const details = evt.target;
+                    if (!(details instanceof HTMLDetailsElement)) return;
+                    if (!details.matches('details[data-quota-details]')) return;
+                    scrollQuotaIntoView(details);
+                }, true);
+
+                // 配额内容通过 HTMX OOB 交换后，若面板已展开则再次确保可见（避免内容加载后溢出视图）
+                document.addEventListener('htmx:afterSwap', (evt) => {
+                    const target = evt.target;
+                    if (!(target instanceof HTMLElement)) return;
+                    if (!target.id || !target.id.startsWith('quota-')) return;
+                    const details = target.closest('details[data-quota-details]');
+                    if (details && details.open) {
+                        scrollQuotaIntoView(details);
+                    }
+                });
+            })();
+    </script>
+</body>
+
+</html>

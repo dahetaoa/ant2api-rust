@@ -1,0 +1,16 @@
+<div class="bg-white p-4 rounded-xl border border-slate-200 flex flex-col gap-2 transition-colors">
+    <span class="text-sm font-medium text-slate-500">TOKEN总数</span>
+    <span class="text-2xl font-bold text-slate-900">{{ stats.total }}</span>
+</div>
+<div class="bg-white p-4 rounded-xl border border-slate-200 flex flex-col gap-2 transition-colors">
+    <span class="text-sm font-medium text-slate-500">活跃TOKEN</span>
+    <span class="text-2xl font-bold text-emerald-500">{{ stats.active }}</span>
+</div>
+<div class="bg-white p-4 rounded-xl border border-slate-200 flex flex-col gap-2 transition-colors">
+    <span class="text-sm font-medium text-slate-500">失效TOKEN</span>
+    <span class="text-2xl font-bold text-red-500">{{ stats.expired }}</span>
+</div>
+<div class="bg-white p-4 rounded-xl border border-slate-200 flex flex-col gap-2 transition-colors">
+    <span class="text-sm font-medium text-slate-500">禁用TOKEN</span>
+    <span class="text-2xl font-bold text-amber-500">{{ stats.disabled }}</span>
+</div>

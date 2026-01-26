@@ -5,19 +5,24 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.100"
+arc-swap = "1.7"
 askama = "0.15.1"
 async-stream = "0.3.6"
-axum = "0.8.8"
+axum = { version = "0.8.8", features = ["form"] }
+axum-extra = { version = "0.10.1", features = ["cookie"] }
 base64 = "0.22.1"
 chrono = { version = "0.4.43", features = ["serde"] }
 figment = { version = "0.10.19", features = ["toml", "env"] }
+futures = "0.3"
 moka = { version = "0.12.12", features = ["future"] }
 reqwest = { version = "0.13.1", features = ["json", "stream", "gzip", "form"] }
 serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0"
 sonic-rs = "0.5.6"
 thiserror = "2.0.18"
 tokio = { version = "1.49.0", features = ["full"] }
 tokio-stream = "0.1.18"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter", "json"] }
+urlencoding = "2.1"
 uuid = { version = "1.19.0", features = ["v4"] }

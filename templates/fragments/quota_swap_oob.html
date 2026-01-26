@@ -1,0 +1,52 @@
+<div id="quota-{{ session_id }}" hx-swap-oob="innerHTML">
+    {% if !error_msg.is_empty() %}
+    {# 错误状态 #}
+    <div
+        class="py-3 px-4 bg-red-50 border border-red-100 rounded-xl text-sm text-red-700 flex items-center justify-between gap-3">
+        <div class="min-w-0">
+            <div class="font-medium">无法获取配额</div>
+            <div class="text-xs text-red-600/80 truncate" title="{{ error_msg }}">{{ error_msg }}</div>
+        </div>
+        {% if !session_id.is_empty() %}
+        <button
+            class="shrink-0 px-3 py-1.5 text-xs font-medium bg-white border border-red-200 text-red-700 rounded-lg hover:bg-red-100 transition-colors"
+            hx-get="/manager/api/quota?id={{ session_id }}&force=1" hx-target="#quota-{{ session_id }}"
+            hx-swap="innerHTML">
+            重试
+        </button>
+        {% endif %}
+    </div>
+    {% else if groups.is_empty() %}
+    {# 空状态 #}
+    <div
+        class="py-3 px-4 bg-slate-50 border border-slate-200 rounded-xl text-sm text-slate-600 flex items-center justify-between gap-3">
+        <span>暂无配额数据</span>
+        {% if !session_id.is_empty() %}
+        <button
+            class="px-3 py-1.5 text-xs font-medium bg-white border border-slate-200 text-slate-700 rounded-lg hover:bg-slate-50 transition-colors"
+            hx-get="/manager/api/quota?id={{ session_id }}&force=1" hx-target="#quota-{{ session_id }}"
+            hx-swap="innerHTML">
+            重试
+        </button>
+        {% endif %}
+    </div>
+    {% else %}
+    {# 配额列表 #}
+    <div class="space-y-3 py-3 px-4 bg-slate-50/30 border border-slate-100 rounded-xl">
+        {% for g in groups %}
+        <div class="space-y-1.5">
+            <div class="flex justify-between items-center text-xs font-medium">
+                <span class="text-slate-700">{{ g.label }}</span>
+                <div class="flex items-center gap-2">
+                    <span class="font-bold text-slate-900 quota-pop">{{ g.format_percent() }}</span>
+                    <span class="text-slate-400 font-normal">{{ g.format_reset_time() }}</span>
+                </div>
+            </div>
+            <div class="w-full bg-slate-200 h-2 rounded-full overflow-hidden">
+                <div class="{{ g.bar_class() }}" style="{{ g.bar_width_style() }}"></div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+</div>

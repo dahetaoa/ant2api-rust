@@ -3,13 +3,14 @@ pub mod credential;
 pub mod error;
 pub mod gateway;
 pub mod logging;
+pub mod runtime_config;
 pub mod signature;
 pub mod util;
 pub mod vertex;
 
 use anyhow::Context;
-use axum::Router;
 use axum::routing::{get, post};
+use axum::{middleware, Router};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tracing_subscriber::EnvFilter;
@@ -22,9 +23,26 @@ async fn main() -> anyhow::Result<()> {
 
     init_tracing(&cfg);
 
+    // 初始化运行时配置
+    runtime_config::init(&cfg);
+
     let store = Arc::new(credential::store::Store::new(cfg.clone()));
     if let Err(e) = store.load().await {
         tracing::warn!("加载 accounts.json 失败: {e:#}");
+    }
+    // 启动时先刷新所有账号 token，避免 WebUI 首次加载配额时出现大量 401/未知状态。
+    // 刷新失败不阻塞启动：保留原始账号信息，后续按需再刷新。
+    let account_count = store.count().await;
+    if account_count > 0 {
+        tracing::info!("启动刷新所有账号 token（共 {account_count} 个）...");
+        match store.refresh_all().await {
+            Ok((success, failed)) => {
+                tracing::info!("启动刷新完成：成功 {success}，失败 {failed}");
+            }
+            Err(e) => {
+                tracing::warn!("启动刷新账号失败：{e:#}");
+            }
+        }
     }
 
     let sig_mgr = signature::manager::Manager::new(&cfg.data_dir)
@@ -35,18 +53,36 @@ async fn main() -> anyhow::Result<()> {
         key: cfg.endpoint_mode.clone(),
         host: DEFAULT_BACKEND_HOST.to_string(),
     };
-    let vertex = vertex::client::VertexClient::new(&cfg).context("初始化 VertexClient 失败")?;
+    let vertex = Arc::new(
+        vertex::client::VertexClient::new(&cfg).context("初始化 VertexClient 失败")?,
+    );
 
+    // OpenAI 兼容 API 状态
     let openai_state = Arc::new(gateway::openai::handler::OpenAIState {
         cfg: cfg.clone(),
-        endpoint,
-        vertex,
-        store,
+        endpoint: endpoint.clone(),
+        vertex: (*vertex).clone(),
+        store: store.clone(),
         sig_mgr,
     });
 
-    let app = Router::new()
+    // Manager WebUI 状态
+    let manager_state = Arc::new(gateway::manager::ManagerState {
+        store: store.clone(),
+        endpoint: endpoint.clone(),
+        vertex: vertex.clone(),
+        quota_cache: gateway::manager::QuotaCache::new(),
+    });
+
+    // === 公开路由（不需要认证）===
+    let public_routes = Router::new()
         .route("/health", get(handle_health))
+        .route("/login", get(gateway::manager::handle_login_view))
+        .route("/login", post(gateway::manager::handle_login))
+        .route("/logout", get(gateway::manager::handle_logout));
+
+    // === OpenAI API 路由 ===
+    let api_routes = Router::new()
         .route(
             "/v1/models",
             get(gateway::openai::handler::handle_list_models),
@@ -61,6 +97,64 @@ async fn main() -> anyhow::Result<()> {
             post(gateway::openai::handler::handle_chat_completions),
         )
         .with_state(openai_state);
+
+    // === Manager API 路由（需要认证）===
+    let manager_api_routes = Router::new()
+        .route("/manager/api/stats", get(gateway::manager::handle_stats))
+        .route("/manager/api/list", get(gateway::manager::handle_list))
+        .route("/manager/api/delete", post(gateway::manager::handle_delete))
+        .route("/manager/api/toggle", post(gateway::manager::handle_toggle))
+        .route(
+            "/manager/api/refresh",
+            post(gateway::manager::handle_refresh),
+        )
+        .route(
+            "/manager/api/refresh_all",
+            post(gateway::manager::handle_refresh_all),
+        )
+        .route("/manager/api/quota", get(gateway::manager::handle_quota))
+        .route(
+            "/manager/api/quota/all",
+            post(gateway::manager::handle_quota_all),
+        )
+        .route(
+            "/manager/api/oauth/url",
+            get(gateway::manager::handle_oauth_url),
+        )
+        .route(
+            "/manager/api/oauth/parse-url",
+            post(gateway::manager::handle_oauth_parse_url),
+        )
+        .route(
+            "/manager/api/settings",
+            get(gateway::manager::handle_settings_get),
+        )
+        .route(
+            "/manager/api/settings",
+            post(gateway::manager::handle_settings_post),
+        )
+        .with_state(manager_state.clone());
+
+    // === Dashboard 路由（需要认证）===
+    let dashboard_routes = Router::new()
+        .route("/", get(gateway::manager::handle_dashboard))
+        // 捕获 /oauth-callback 等路径，也显示 dashboard
+        .fallback(gateway::manager::handle_dashboard)
+        .with_state(manager_state.clone());
+
+    // 受保护路由（需要认证）
+    let protected_routes = Router::new()
+        .merge(manager_api_routes)
+        .merge(dashboard_routes)
+        .layer(middleware::from_fn(
+            gateway::manager::manager_auth_middleware,
+        ));
+
+    // 组合所有路由
+    let app = Router::new()
+        .merge(public_routes)
+        .merge(api_routes)
+        .merge(protected_routes);
 
     let addr: SocketAddr = format!("{}:{}", cfg.host, cfg.port)
         .parse()
@@ -85,7 +179,7 @@ async fn handle_health() -> &'static str {
 }
 
 fn init_tracing(cfg: &config::Config) {
-    // Go 版的 DEBUG=low/high 主要控制“客户端/后端详细日志块”。
+    // Go 版的 DEBUG=low/high 主要控制"客户端/后端详细日志块"。
     // 这里默认把依赖库日志控制在 warn（避免噪声），但确保本项目自身日志至少为 info，
     // 以免环境中预设的 RUST_LOG=warn 把关键调试日志过滤掉。
     let debug = cfg.debug.trim().to_lowercase();
