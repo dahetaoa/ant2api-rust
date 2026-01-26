@@ -57,8 +57,8 @@ async fn main() -> anyhow::Result<()> {
         vertex::client::VertexClient::new(&cfg).context("初始化 VertexClient 失败")?,
     );
 
-    // OpenAI 兼容 API 状态
-    let openai_state = Arc::new(gateway::openai::handler::OpenAIState {
+    // API 网关状态（OpenAI/Claude 共用同一份字段集合，便于注册多套路由）。
+    let api_state = Arc::new(gateway::claude::ClaudeState {
         cfg: cfg.clone(),
         endpoint: endpoint.clone(),
         vertex: (*vertex).clone(),
@@ -81,7 +81,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/login", post(gateway::manager::handle_login))
         .route("/logout", get(gateway::manager::handle_logout));
 
-    // === OpenAI API 路由 ===
+    // === API 路由 ===
     let api_routes = Router::new()
         .route(
             "/v1/models",
@@ -96,7 +96,10 @@ async fn main() -> anyhow::Result<()> {
             "/v1/chat/completions/",
             post(gateway::openai::handler::handle_chat_completions),
         )
-        .with_state(openai_state);
+        .route("/v1/messages", post(gateway::claude::handle_messages))
+        // 兼容 Go ServeMux：允许尾随斜杠的同一路径
+        .route("/v1/messages/", post(gateway::claude::handle_messages))
+        .with_state(api_state);
 
     // === Manager API 路由（需要认证）===
     let manager_api_routes = Router::new()

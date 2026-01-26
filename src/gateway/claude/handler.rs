@@ -1,11 +1,14 @@
-use super::convert::{convert_usage, to_chat_completion, to_models_response, to_vertex_request};
-use super::stream::{StreamWriter, now_unix, sse_error_events};
-use super::types::ChatRequest;
-use crate::gateway::common::AccountContext;
+use super::convert::to_vertex_request;
+use super::response::to_messages_response;
+use super::stream::{sse_error_events, ClaudeStreamWriter};
+use super::types::MessagesRequest;
+use crate::credential::store::Store as CredentialStore;
 use crate::gateway::common::retry::should_retry_with_next_token;
+use crate::gateway::common::AccountContext;
 use crate::logging;
-use crate::util::id;
-use crate::vertex::client::ApiError;
+use crate::signature::manager::Manager as SignatureManager;
+use crate::util::{id, model as modelutil};
+use crate::vertex::client::{ApiError, Endpoint, VertexClient};
 use axum::Json;
 use axum::body::Bytes;
 use axum::extract::OriginalUri;
@@ -14,17 +17,24 @@ use axum::http::StatusCode;
 use axum::http::{HeaderMap, Method};
 use axum::response::sse::{Event, Sse};
 use axum::response::{IntoResponse, Response};
+use serde::Serialize;
 use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
-/// OpenAI 与 Claude 网关共享同一套后端转发状态（字段一致，避免路由层 state 类型冲突）。
-pub type OpenAIState = crate::gateway::claude::ClaudeState;
+#[derive(Clone)]
+pub struct ClaudeState {
+    pub cfg: crate::config::Config,
+    pub endpoint: Endpoint,
+    pub vertex: VertexClient,
+    pub store: Arc<CredentialStore>,
+    pub sig_mgr: SignatureManager,
+}
 
 pub async fn handle_list_models(
-    State(state): State<Arc<OpenAIState>>,
+    State(state): State<Arc<ClaudeState>>,
     method: Method,
     uri: OriginalUri,
     headers: HeaderMap,
@@ -48,10 +58,10 @@ pub async fn handle_list_models(
             Err(e) => {
                 let status = StatusCode::SERVICE_UNAVAILABLE;
                 if state.cfg.client_log_enabled() {
-                    let err = openai_error_value(&e.to_string());
+                    let err = claude_error_value(&e.to_string());
                     logging::client_response(status.as_u16(), start.elapsed(), Some(&err));
                 }
-                return openai_error(status, &e.to_string());
+                return claude_error(status, &e.to_string());
             }
         };
 
@@ -93,13 +103,37 @@ pub async fn handle_list_models(
             .map(|e| e.to_string())
             .unwrap_or_else(|| "后端请求失败".to_string());
         if state.cfg.client_log_enabled() {
-            let err = openai_error_value(&msg);
+            let err = claude_error_value(&msg);
             logging::client_response(status.as_u16(), start.elapsed(), Some(&err));
         }
-        return openai_error(status, &msg);
+        return claude_error(status, &msg);
     };
 
-    let out = to_models_response(&models);
+    #[derive(Serialize)]
+    struct ModelItem {
+        id: String,
+        #[serde(rename = "type")]
+        typ: String,
+        #[serde(skip_serializing_if = "String::is_empty", default)]
+        display_name: String,
+    }
+
+    #[derive(Serialize)]
+    struct ModelListResponse {
+        data: Vec<ModelItem>,
+    }
+
+    let ids = modelutil::build_sorted_model_ids(&models);
+    let mut items: Vec<ModelItem> = Vec::with_capacity(ids.len());
+    for mid in ids {
+        items.push(ModelItem {
+            display_name: mid.clone(),
+            id: mid,
+            typ: "model".to_string(),
+        });
+    }
+
+    let out = ModelListResponse { data: items };
     if state.cfg.client_log_enabled()
         && let Ok(v) = sonic_rs::to_value(&out)
     {
@@ -108,8 +142,8 @@ pub async fn handle_list_models(
     (StatusCode::OK, Json(out)).into_response()
 }
 
-pub async fn handle_chat_completions(
-    State(state): State<Arc<OpenAIState>>,
+pub async fn handle_messages(
+    State(state): State<Arc<ClaudeState>>,
     method: Method,
     uri: OriginalUri,
     headers: HeaderMap,
@@ -120,18 +154,18 @@ pub async fn handle_chat_completions(
         logging::client_request(method.as_str(), uri.0.path(), &headers, body.as_ref());
     }
 
-    let mut req: ChatRequest = match sonic_rs::from_slice(body.as_ref()) {
+    let req: MessagesRequest = match sonic_rs::from_slice(body.as_ref()) {
         Ok(v) => v,
         Err(_) => {
             if state.cfg.client_log_enabled() {
-                let err = openai_error_value("请求 JSON 解析失败，请检查请求体格式。");
+                let err = claude_error_value("请求 JSON 解析失败，请检查请求体格式。");
                 logging::client_response(
                     StatusCode::BAD_REQUEST.as_u16(),
                     start.elapsed(),
                     Some(&err),
                 );
             }
-            return openai_error(
+            return claude_error(
                 StatusCode::BAD_REQUEST,
                 "请求 JSON 解析失败，请检查请求体格式。",
             );
@@ -145,25 +179,26 @@ pub async fn handle_chat_completions(
         email: String::new(),
     };
 
-    let (mut vreq, request_id) =
-        match to_vertex_request(&state.cfg, &state.sig_mgr, &mut req, &placeholder).await {
-            Ok(v) => v,
-            Err(e) => {
-                if state.cfg.client_log_enabled() {
-                    let err = openai_error_value(&e.to_string());
-                    logging::client_response(
-                        StatusCode::BAD_REQUEST.as_u16(),
-                        start.elapsed(),
-                        Some(&err),
-                    );
-                }
-                return openai_error(StatusCode::BAD_REQUEST, &e.to_string());
+    let (mut vreq, request_id) = match to_vertex_request(&state.cfg, &state.sig_mgr, &req, &placeholder).await {
+        Ok(v) => v,
+        Err(e) => {
+            if state.cfg.client_log_enabled() {
+                let err = claude_error_value(&e.to_string());
+                logging::client_response(
+                    StatusCode::BAD_REQUEST.as_u16(),
+                    start.elapsed(),
+                    Some(&err),
+                );
             }
-        };
+            return claude_error(StatusCode::BAD_REQUEST, &e.to_string());
+        }
+    };
 
     let model = req.model.clone();
     let is_stream = req.stream;
     drop(req);
+
+    let input_tokens = estimate_tokens(body.as_ref());
 
     let mut attempts = state.store.enabled_count().await;
     if attempts < 1 {
@@ -171,7 +206,16 @@ pub async fn handle_chat_completions(
     }
 
     if is_stream {
-        return handle_stream_with_retry(state, vreq, request_id, model, attempts, start).await;
+        return handle_stream_with_retry(
+            state,
+            vreq,
+            request_id,
+            model,
+            input_tokens,
+            attempts,
+            start,
+        )
+        .await;
     }
 
     let mut last_err: Option<ApiError> = None;
@@ -182,14 +226,14 @@ pub async fn handle_chat_completions(
             Ok(v) => v,
             Err(e) => {
                 if state.cfg.client_log_enabled() {
-                    let err = openai_error_value(&e.to_string());
+                    let err = claude_error_value(&e.to_string());
                     logging::client_response(
                         StatusCode::SERVICE_UNAVAILABLE.as_u16(),
                         start.elapsed(),
                         Some(&err),
                     );
                 }
-                return openai_error(StatusCode::SERVICE_UNAVAILABLE, &e.to_string());
+                return claude_error(StatusCode::SERVICE_UNAVAILABLE, &e.to_string());
             }
         };
         let project_id = if acc.project_id.is_empty() {
@@ -232,14 +276,13 @@ pub async fn handle_chat_completions(
             .map(|e| e.to_string())
             .unwrap_or_else(|| "后端请求失败".to_string());
         if state.cfg.client_log_enabled() {
-            let err = openai_error_value(&msg);
+            let err = claude_error_value(&msg);
             logging::client_response(status.as_u16(), start.elapsed(), Some(&err));
         }
-        return openai_error(status, &msg);
+        return claude_error(status, &msg);
     };
 
-    let out = to_chat_completion(&vresp, &model, &request_id, &state.sig_mgr).await;
-
+    let out = to_messages_response(&vresp, &request_id, &model, input_tokens, &state.sig_mgr).await;
     if state.cfg.client_log_enabled()
         && let Ok(v) = sonic_rs::to_value(&out)
     {
@@ -249,10 +292,11 @@ pub async fn handle_chat_completions(
 }
 
 async fn handle_stream_with_retry(
-    state: Arc<OpenAIState>,
+    state: Arc<ClaudeState>,
     mut vreq: crate::vertex::types::Request,
     request_id: String,
     model: String,
+    input_tokens: i32,
     attempts: usize,
     started_at: Instant,
 ) -> Response {
@@ -270,7 +314,7 @@ async fn handle_stream_with_retry(
                 Ok(v) => v,
                 Err(e) => {
                     if client_log {
-                        let err = openai_error_value(&e.to_string());
+                        let err = claude_error_value(&e.to_string());
                         logging::client_stream_response(
                             StatusCode::OK.as_u16(),
                             started_at.elapsed(),
@@ -281,6 +325,7 @@ async fn handle_stream_with_retry(
                     return;
                 }
             };
+
             let project_id = if acc.project_id.is_empty() {
                 id::project_id()
             } else {
@@ -315,7 +360,7 @@ async fn handle_stream_with_retry(
                 .map(|e| e.to_string())
                 .unwrap_or_else(|| "后端请求失败".to_string());
             if client_log {
-                let err = openai_error_value(&msg);
+                let err = claude_error_value(&msg);
                 logging::client_stream_response(
                     StatusCode::OK.as_u16(),
                     started_at.elapsed(),
@@ -326,13 +371,8 @@ async fn handle_stream_with_retry(
             return;
         };
 
-        let mut writer = StreamWriter::new(
-            id::chat_completion_id(),
-            now_unix(),
-            model.clone(),
-            request_id.clone(),
-            client_log,
-        );
+        let mut writer = ClaudeStreamWriter::new(request_id.clone(), model.clone(), input_tokens);
+        writer.set_log_enabled(client_log);
 
         let build_merged = backend_log;
         let parse_res = crate::vertex::stream::parse_stream_with_result(
@@ -347,14 +387,22 @@ async fn handle_stream_with_retry(
                         events.extend(ev);
                         saves.extend(sv);
                     }
-                    if !cand.finish_reason.is_empty() {
-                        events.extend(writer.flush_tool_calls());
-                    }
                 }
 
                 let tx = tx.clone();
                 let sig_mgr = state.sig_mgr.clone();
                 async move {
+                    // 先发事件（低延迟），再写签名缓存（不影响首包）。
+                    for ev in events {
+                        let name = claude_sse_event_name(&ev);
+                        if tx
+                            .send(Ok(Event::default().event(name).data(ev)))
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
                     for s in saves {
                         sig_mgr
                             .save_owned(
@@ -365,11 +413,6 @@ async fn handle_stream_with_retry(
                                 s.model,
                             )
                             .await;
-                    }
-                    for ev in events {
-                        if tx.send(Ok(Event::default().data(ev))).await.is_err() {
-                            break;
-                        }
                     }
                     Ok(())
                 }
@@ -383,20 +426,29 @@ async fn handle_stream_with_retry(
             Err(e) => e.result,
         };
 
-        let finish = if stream_result.finish_reason.is_empty() {
-            "stop".to_string()
-        } else {
-            stream_result.finish_reason
-        };
-        let usage = convert_usage(stream_result.usage.as_ref());
+        let output_tokens = stream_result
+            .usage
+            .as_ref()
+            .map(|u| u.candidates_token_count)
+            .unwrap_or(0);
 
-        // 即使客户端已断开，也尽量生成完整的日志（调试期更重要）。
+        let stop_reason = if !stream_result.tool_calls.is_empty() {
+            "tool_use"
+        } else {
+            "end_turn"
+        };
+
         let mut client_disconnected = false;
-        for ev in writer.finish_events(&finish, usage) {
+        for ev in writer.finish(output_tokens, stop_reason) {
             if client_disconnected {
                 continue;
             }
-            if tx.send(Ok(Event::default().data(ev))).await.is_err() {
+            let name = claude_sse_event_name(&ev);
+            if tx
+                .send(Ok(Event::default().event(name).data(ev)))
+                .await
+                .is_err()
+            {
                 client_disconnected = true;
             }
         }
@@ -420,13 +472,45 @@ async fn handle_stream_with_retry(
 
 async fn send_sse_error(tx: &mpsc::Sender<Result<Event, Infallible>>, msg: &str) {
     for ev in sse_error_events(msg) {
-        let _ = tx.send(Ok(Event::default().data(ev))).await;
+        let name = claude_sse_event_name(&ev);
+        let _ = tx.send(Ok(Event::default().event(name).data(ev))).await;
     }
 }
 
-fn openai_error(status: StatusCode, msg: &str) -> Response {
+fn estimate_tokens(body: &[u8]) -> i32 {
+    if body.is_empty() {
+        return 0;
+    }
+    let mut c = (body.len() / 4) as i32;
+    if c < 1 {
+        c = 1;
+    }
+    c
+}
+
+fn claude_sse_event_name(json: &str) -> &'static str {
+    const PREFIX: &str = "{\"type\":\"";
+    let Some(rest) = json.strip_prefix(PREFIX) else {
+        return "message";
+    };
+    let Some(end) = rest.find('"') else {
+        return "message";
+    };
+    match &rest[..end] {
+        "message_start" => "message_start",
+        "content_block_start" => "content_block_start",
+        "content_block_delta" => "content_block_delta",
+        "content_block_stop" => "content_block_stop",
+        "message_delta" => "message_delta",
+        "message_stop" => "message_stop",
+        "error" => "error",
+        _ => "message",
+    }
+}
+
+fn claude_error(status: StatusCode, msg: &str) -> Response {
     let encoded = sonic_rs::to_string(msg).unwrap_or_else(|_| "\"\"".to_string());
-    let body = format!("{{\"error\":{{\"message\":{encoded},\"type\":\"server_error\"}}}}");
+    let body = format!("{{\"type\":\"error\",\"error\":{{\"type\":\"api_error\",\"message\":{encoded}}}}}");
     (
         status,
         [(axum::http::header::CONTENT_TYPE, "application/json")],
@@ -435,11 +519,14 @@ fn openai_error(status: StatusCode, msg: &str) -> Response {
         .into_response()
 }
 
-fn openai_error_value(msg: &str) -> sonic_rs::Value {
-    let mut err = sonic_rs::Object::new();
-    err.insert("message", msg);
-    err.insert("type", "server_error");
+fn claude_error_value(msg: &str) -> sonic_rs::Value {
+    let mut inner = sonic_rs::Object::new();
+    inner.insert("type", "api_error");
+    inner.insert("message", msg);
+
     let mut outer = sonic_rs::Object::new();
-    outer.insert("error", err);
+    outer.insert("type", "error");
+    outer.insert("error", inner);
     outer.into_value()
 }
+
