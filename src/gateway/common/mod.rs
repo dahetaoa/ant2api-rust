@@ -7,6 +7,7 @@ pub struct AccountContext {
     pub project_id: String,
     pub session_id: String,
     pub access_token: String,
+    pub email: String,
 }
 
 pub fn find_function_name(

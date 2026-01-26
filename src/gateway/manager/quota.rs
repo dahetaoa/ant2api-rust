@@ -216,7 +216,7 @@ impl QuotaCache {
         // 带超时获取
         let result = tokio::time::timeout(
             QUOTA_FETCH_TIMEOUT,
-            vertex.fetch_available_models(endpoint, &project_id, access_token),
+            vertex.fetch_available_models(endpoint, &project_id, access_token, &account.email),
         )
         .await;
 

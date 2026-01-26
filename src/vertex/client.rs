@@ -2,7 +2,7 @@ use crate::config::Config;
 use crate::logging;
 use crate::vertex::types::{Request, Response};
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HOST, HeaderMap, HeaderValue, USER_AGENT};
-use sonic_rs::JsonValueTrait;
+use sonic_rs::{JsonValueMutTrait, JsonValueTrait};
 use std::collections::HashMap;
 use std::time::Duration;
 use thiserror::Error;
@@ -158,13 +158,27 @@ impl VertexClient {
         endpoint: &Endpoint,
         access_token: &str,
         req: &Request,
+        email: &str,
     ) -> Result<Response, ApiError> {
         let url = endpoint.no_stream_url();
         self.with_retry(|| async {
             let body = sonic_rs::to_vec(req)?;
             let headers = self.build_headers(access_token, endpoint);
             if self.log_level.backend_enabled() {
-                logging::backend_request("POST", &url, &headers, &body);
+                if let Ok(mut v) = sonic_rs::from_slice::<sonic_rs::Value>(&body) {
+                    if let Some(obj) = v.as_object_mut() {
+                        obj.insert("account", sonic_rs::Value::from(email));
+                        if let Ok(log_body) = sonic_rs::to_vec(&v) {
+                            logging::backend_request("POST", &url, &headers, &log_body);
+                        } else {
+                            logging::backend_request("POST", &url, &headers, &body);
+                        }
+                    } else {
+                        logging::backend_request("POST", &url, &headers, &body);
+                    }
+                } else {
+                    logging::backend_request("POST", &url, &headers, &body);
+                }
             }
             let start = std::time::Instant::now();
             let resp = self
@@ -193,13 +207,27 @@ impl VertexClient {
         endpoint: &Endpoint,
         access_token: &str,
         req: &Request,
+        email: &str,
     ) -> Result<reqwest::Response, ApiError> {
         let url = endpoint.stream_url();
         self.with_retry(|| async {
             let body = sonic_rs::to_vec(req)?;
             let headers = self.build_stream_headers(access_token, endpoint);
             if self.log_level.backend_enabled() {
-                logging::backend_request("POST", &url, &headers, &body);
+                if let Ok(mut v) = sonic_rs::from_slice::<sonic_rs::Value>(&body) {
+                    if let Some(obj) = v.as_object_mut() {
+                        obj.insert("account", sonic_rs::Value::from(email));
+                        if let Ok(log_body) = sonic_rs::to_vec(&v) {
+                            logging::backend_request("POST", &url, &headers, &log_body);
+                        } else {
+                            logging::backend_request("POST", &url, &headers, &body);
+                        }
+                    } else {
+                        logging::backend_request("POST", &url, &headers, &body);
+                    }
+                } else {
+                    logging::backend_request("POST", &url, &headers, &body);
+                }
             }
             let start = std::time::Instant::now();
             let resp = self
@@ -228,13 +256,27 @@ impl VertexClient {
         endpoint: &Endpoint,
         project: &str,
         access_token: &str,
+        email: &str,
     ) -> Result<AvailableModelsResponse, ApiError> {
         let url = endpoint.fetch_available_models_url();
         let body = sonic_rs::to_vec(&serde_payload_project(project))?;
         let headers = self.build_headers(access_token, endpoint);
         let start = std::time::Instant::now();
         if self.log_level.backend_enabled() {
-            logging::backend_request("POST", &url, &headers, &body);
+            if let Ok(mut v) = sonic_rs::from_slice::<sonic_rs::Value>(&body) {
+                if let Some(obj) = v.as_object_mut() {
+                    obj.insert("account", sonic_rs::Value::from(email));
+                    if let Ok(log_body) = sonic_rs::to_vec(&v) {
+                        logging::backend_request("POST", &url, &headers, &log_body);
+                    } else {
+                        logging::backend_request("POST", &url, &headers, &body);
+                    }
+                } else {
+                    logging::backend_request("POST", &url, &headers, &body);
+                }
+            } else {
+                logging::backend_request("POST", &url, &headers, &body);
+            }
         }
 
         let resp = self

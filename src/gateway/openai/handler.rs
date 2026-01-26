@@ -71,7 +71,7 @@ pub async fn handle_list_models(
 
         match state
             .vertex
-            .fetch_available_models(&state.endpoint, &project_id, &acc.access_token)
+            .fetch_available_models(&state.endpoint, &project_id, &acc.access_token, &acc.email)
             .await
         {
             Ok(v) => {
@@ -150,6 +150,7 @@ pub async fn handle_chat_completions(
         project_id: id::project_id(),
         session_id: id::session_id(),
         access_token: String::new(),
+        email: String::new(),
     };
 
     let (mut vreq, request_id) =
@@ -210,7 +211,7 @@ pub async fn handle_chat_completions(
 
         match state
             .vertex
-            .generate_content(&state.endpoint, &acc.access_token, &vreq)
+            .generate_content(&state.endpoint, &acc.access_token, &vreq, &acc.email)
             .await
         {
             Ok(v) => {
@@ -298,7 +299,7 @@ async fn handle_stream_with_retry(
 
             match state
                 .vertex
-                .generate_content_stream(&state.endpoint, &acc.access_token, &vreq)
+                .generate_content_stream(&state.endpoint, &acc.access_token, &vreq, &acc.email)
                 .await
             {
                 Ok(r) => {
