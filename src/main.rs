@@ -3,6 +3,7 @@ pub mod credential;
 pub mod error;
 pub mod gateway;
 pub mod logging;
+pub mod quota_pool;
 pub mod runtime_config;
 pub mod signature;
 pub mod util;
@@ -57,12 +58,22 @@ async fn main() -> anyhow::Result<()> {
         vertex::client::VertexClient::new(&cfg).context("初始化 VertexClient 失败")?,
     );
 
+    // 配额池：后台刷新各账号配额，并用于按模型分组选择更“有余额”的账号。
+    let quota_pool = Arc::new(quota_pool::QuotaPoolManager::new());
+    quota_pool::spawn_refresh_task(
+        store.clone(),
+        endpoint.clone(),
+        (*vertex).clone(),
+        quota_pool.clone(),
+    );
+
     // API 网关状态（OpenAI/Claude 共用同一份字段集合，便于注册多套路由）。
     let api_state = Arc::new(gateway::claude::ClaudeState {
         cfg: cfg.clone(),
         endpoint: endpoint.clone(),
         vertex: (*vertex).clone(),
         store: store.clone(),
+        quota_pool: quota_pool.clone(),
         sig_mgr,
     });
 
@@ -72,6 +83,7 @@ async fn main() -> anyhow::Result<()> {
         endpoint: endpoint.clone(),
         vertex: vertex.clone(),
         quota_cache: gateway::manager::QuotaCache::new(),
+        quota_pool: quota_pool.clone(),
     });
 
     // === 公开路由（不需要认证）===

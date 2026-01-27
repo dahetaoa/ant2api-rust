@@ -107,6 +107,7 @@ fn sanitize_vertex_schema_in_place(schema: &mut sonic_rs::Object) {
     schema.remove(&"$schema");
     schema.remove(&"$id");
     schema.remove(&"$anchor");
+    schema.remove(&"$comment");
 
     // Vertex Schema uses "ref"/"defs" (no $ prefix).
     if let Some(v) = schema.remove(&"$ref")
@@ -234,6 +235,8 @@ fn sanitize_vertex_schema_in_place(schema: &mut sonic_rs::Object) {
         "readOnly",
         "writeOnly",
         "deprecated",
+        "title",
+        "default",
     ] {
         schema.remove(&k);
     }

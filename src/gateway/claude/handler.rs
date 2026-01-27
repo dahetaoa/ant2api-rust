@@ -6,6 +6,7 @@ use crate::credential::store::Store as CredentialStore;
 use crate::gateway::common::retry::should_retry_with_next_token;
 use crate::gateway::common::AccountContext;
 use crate::logging;
+use crate::quota_pool::QuotaPoolManager;
 use crate::signature::manager::Manager as SignatureManager;
 use crate::util::{id, model as modelutil};
 use crate::vertex::client::{ApiError, Endpoint, VertexClient};
@@ -18,6 +19,7 @@ use axum::http::{HeaderMap, Method};
 use axum::response::sse::{Event, Sse};
 use axum::response::{IntoResponse, Response};
 use serde::Serialize;
+use std::collections::HashSet;
 use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Instant;
@@ -30,6 +32,7 @@ pub struct ClaudeState {
     pub endpoint: Endpoint,
     pub vertex: VertexClient,
     pub store: Arc<CredentialStore>,
+    pub quota_pool: Arc<QuotaPoolManager>,
     pub sig_mgr: SignatureManager,
 }
 
@@ -217,9 +220,14 @@ pub async fn handle_messages(
 
     let mut last_err: Option<ApiError> = None;
     let mut vresp = None;
+    let mut used_sessions: HashSet<String> = HashSet::new();
 
     for _ in 0..attempts {
-        let acc = match state.store.get_token().await {
+        let acc = match state
+            .store
+            .get_token_for_model_excluding(&model, &state.quota_pool, &used_sessions)
+            .await
+        {
             Ok(v) => v,
             Err(e) => {
                 if state.cfg.client_log_enabled() {
@@ -233,6 +241,7 @@ pub async fn handle_messages(
                 return claude_error(StatusCode::SERVICE_UNAVAILABLE, &e.to_string());
             }
         };
+        used_sessions.insert(acc.session_id.clone());
         let project_id = if acc.project_id.is_empty() {
             id::project_id()
         } else {
@@ -304,9 +313,14 @@ async fn handle_stream_with_retry(
 
         let mut last_err: Option<ApiError> = None;
         let mut resp = None;
+        let mut used_sessions: HashSet<String> = HashSet::new();
 
         for _ in 0..attempts {
-            let acc = match state.store.get_token().await {
+            let acc = match state
+                .store
+                .get_token_for_model_excluding(&model, &state.quota_pool, &used_sessions)
+                .await
+            {
                 Ok(v) => v,
                 Err(e) => {
                     if client_log {
@@ -321,6 +335,7 @@ async fn handle_stream_with_retry(
                     return;
                 }
             };
+            used_sessions.insert(acc.session_id.clone());
 
             let project_id = if acc.project_id.is_empty() {
                 id::project_id()

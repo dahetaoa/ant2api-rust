@@ -246,14 +246,14 @@ impl Default for QuotaCache {
 }
 
 /// 配额分组键常量
-const QUOTA_GROUP_CLAUDE_GPT: &str = "Claude/GPT";
-const QUOTA_GROUP_GEMINI3_PRO: &str = "Gemini 3 Pro";
-const QUOTA_GROUP_GEMINI3_FLASH: &str = "Gemini 3 Flash";
-const QUOTA_GROUP_GEMINI3_PRO_IMAGE: &str = "Gemini 3 Pro Image";
-const QUOTA_GROUP_GEMINI25: &str = "Gemini 2.5 Pro/Flash/Lite";
+pub(crate) const QUOTA_GROUP_CLAUDE_GPT: &str = "Claude/GPT";
+pub(crate) const QUOTA_GROUP_GEMINI3_PRO: &str = "Gemini 3 Pro";
+pub(crate) const QUOTA_GROUP_GEMINI3_FLASH: &str = "Gemini 3 Flash";
+pub(crate) const QUOTA_GROUP_GEMINI3_PRO_IMAGE: &str = "Gemini 3 Pro Image";
+pub(crate) const QUOTA_GROUP_GEMINI25: &str = "Gemini 2.5 Pro/Flash/Lite";
 
 /// 根据模型 ID 确定分组键。
-fn group_quota_key(model_id: &str) -> &'static str {
+pub(crate) fn group_quota_key(model_id: &str) -> &'static str {
     let m = crate::util::model::canonical_model_id(model_id).to_lowercase();
     if m.starts_with("claude-") || m.starts_with("gpt-") {
         QUOTA_GROUP_CLAUDE_GPT
@@ -269,7 +269,7 @@ fn group_quota_key(model_id: &str) -> &'static str {
 }
 
 /// 将模型响应分组为配额组。
-fn group_quota_groups(models: &HashMap<String, sonic_rs::Value>) -> Vec<QuotaGroup> {
+pub(crate) fn group_quota_groups(models: &HashMap<String, sonic_rs::Value>) -> Vec<QuotaGroup> {
     use std::collections::BTreeMap;
     
     let mut groups: BTreeMap<&str, QuotaGroup> = BTreeMap::new();

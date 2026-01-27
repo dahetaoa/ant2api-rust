@@ -16,6 +16,7 @@ use crate::credential::store::Store;
 use crate::credential::types::Account;
 use crate::gateway::manager::quota::{AccountQuota, QuotaCache, QuotaGroup};
 use crate::gateway::manager::templates::{self, ViewAccount, ViewQuotaGroup, to_view_accounts};
+use crate::quota_pool::QuotaPoolManager;
 use crate::runtime_config::{self, WebUISettings};
 use crate::util::id;
 use crate::vertex::client::{Endpoint, VertexClient};
@@ -28,6 +29,7 @@ pub struct ManagerState {
     pub endpoint: Endpoint,
     pub vertex: Arc<VertexClient>,
     pub quota_cache: QuotaCache,
+    pub quota_pool: Arc<QuotaPoolManager>,
 }
 
 /// Cookie 名称
@@ -240,6 +242,8 @@ pub async fn handle_delete(
     
     if let Some(idx) = idx {
         if state.store.delete(idx).await.is_ok() {
+            state.quota_pool.remove_session(&query.id).await;
+            state.quota_cache.invalidate(&query.id).await;
             return "".into_response();
         }
     }
@@ -259,6 +263,10 @@ pub async fn handle_toggle(
         if idx < accounts.len() {
             let new_state = !accounts[idx].enable;
             let _ = state.store.set_enable(idx, new_state).await;
+            if !new_state {
+                // 账号禁用后立即从配额池移除，避免仍被网关选择。
+                state.quota_pool.remove_session(&query.id).await;
+            }
             
             // 重新获取更新后的账号
             let accounts = state.store.get_all().await;
