@@ -198,8 +198,6 @@ pub async fn handle_messages(
     let is_stream = req.stream;
     drop(req);
 
-    let input_tokens = estimate_tokens(body.as_ref());
-
     let mut attempts = state.store.enabled_count().await;
     if attempts < 1 {
         attempts = 1;
@@ -211,7 +209,6 @@ pub async fn handle_messages(
             vreq,
             request_id,
             model,
-            input_tokens,
             attempts,
             start,
         )
@@ -282,7 +279,7 @@ pub async fn handle_messages(
         return claude_error(status, &msg);
     };
 
-    let out = to_messages_response(&vresp, &request_id, &model, input_tokens, &state.sig_mgr).await;
+    let out = to_messages_response(&vresp, &request_id, &model, &state.sig_mgr).await;
     if state.cfg.client_log_enabled()
         && let Ok(v) = sonic_rs::to_value(&out)
     {
@@ -296,7 +293,6 @@ async fn handle_stream_with_retry(
     mut vreq: crate::vertex::types::Request,
     request_id: String,
     model: String,
-    input_tokens: i32,
     attempts: usize,
     started_at: Instant,
 ) -> Response {
@@ -371,7 +367,7 @@ async fn handle_stream_with_retry(
             return;
         };
 
-        let mut writer = ClaudeStreamWriter::new(request_id.clone(), model.clone(), input_tokens);
+        let mut writer = ClaudeStreamWriter::new(request_id.clone(), model.clone());
         writer.set_log_enabled(client_log);
 
         let build_merged = backend_log;
@@ -380,6 +376,10 @@ async fn handle_stream_with_retry(
             |data| {
                 let mut events: Vec<String> = Vec::new();
                 let mut saves: Vec<super::stream::SignatureSave> = Vec::new();
+
+                if let Some(usage) = data.response.usage_metadata.as_ref() {
+                    writer.set_input_tokens(usage.prompt_token_count);
+                }
 
                 if let Some(cand) = data.response.candidates.first() {
                     for p in &cand.content.parts {
@@ -477,17 +477,6 @@ async fn send_sse_error(tx: &mpsc::Sender<Result<Event, Infallible>>, msg: &str)
     }
 }
 
-fn estimate_tokens(body: &[u8]) -> i32 {
-    if body.is_empty() {
-        return 0;
-    }
-    let mut c = (body.len() / 4) as i32;
-    if c < 1 {
-        c = 1;
-    }
-    c
-}
-
 fn claude_sse_event_name(json: &str) -> &'static str {
     const PREFIX: &str = "{\"type\":\"";
     let Some(rest) = json.strip_prefix(PREFIX) else {
@@ -529,4 +518,3 @@ fn claude_error_value(msg: &str) -> sonic_rs::Value {
     outer.insert("error", inner);
     outer.into_value()
 }
-

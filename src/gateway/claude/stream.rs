@@ -56,11 +56,11 @@ pub struct ClaudeStreamWriter {
 }
 
 impl ClaudeStreamWriter {
-    pub fn new(request_id: String, model: String, input_tokens: i32) -> Self {
+    pub fn new(request_id: String, model: String) -> Self {
         Self {
             request_id,
             model: model.clone(),
-            input_tokens,
+            input_tokens: 0,
             next_index: 0,
             started: false,
             current_block: None,
@@ -76,6 +76,18 @@ impl ClaudeStreamWriter {
             log_pending_index: 0,
             log_pending_kind: None,
         }
+    }
+
+    pub fn set_input_tokens(&mut self, input_tokens: i32) {
+        let v = input_tokens.max(0);
+        if v == 0 {
+            return;
+        }
+        // 仅在流开始前设置，避免客户端已收到 message_start 后出现“前后不一致”的错觉。
+        if self.started {
+            return;
+        }
+        self.input_tokens = v;
     }
 
     pub fn set_log_enabled(&mut self, enabled: bool) {

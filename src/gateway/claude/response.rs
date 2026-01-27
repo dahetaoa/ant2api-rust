@@ -8,9 +8,16 @@ pub async fn to_messages_response(
     resp: &vertex::types::Response,
     request_id: &str,
     model: &str,
-    input_tokens: i32,
     sig_mgr: &SignatureManager,
 ) -> MessagesResponse {
+    let input_tokens = resp
+        .response
+        .usage_metadata
+        .as_ref()
+        .map(|u| u.prompt_token_count)
+        .unwrap_or(0)
+        .max(0);
+
     let mut out = MessagesResponse {
         id: format!("msg_{request_id}"),
         typ: "message".to_string(),
@@ -20,7 +27,7 @@ pub async fn to_messages_response(
         stop_reason: "end_turn".to_string(),
         stop_sequence: None,
         usage: Usage {
-            input_tokens: input_tokens.max(0),
+            input_tokens,
             output_tokens: 0,
         },
     };
@@ -131,4 +138,3 @@ pub async fn to_messages_response(
 
     out
 }
-
