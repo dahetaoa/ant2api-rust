@@ -1,6 +1,6 @@
 use crate::vertex::types::{Content, Part, SystemInstruction};
 use sonic_rs::prelude::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub const AGENT_SYSTEM_PROMPT: &str = r#"You are Antigravity, a powerful agentic AI coding assistant designed by the Google Deepmind team working on Advanced Agentic Coding.
 You are pair programming with a USER to solve their coding task. The task may require creating a new codebase, modifying or debugging an existing codebase, or simply answering a question.
@@ -165,6 +165,9 @@ fn sanitize_vertex_schema_in_place(schema: &mut sonic_rs::Object) {
             schema.insert(&"type", "ARRAY");
         }
     }
+
+    // Vertex doesn't support `const`; best-effort downgrade to a single-value enum.
+    convert_const_to_enum(schema);
 
     // Normalize "enum" to []string (Vertex Schema uses string enums).
     if let Some(v) = schema.get(&"enum").and_then(normalize_enum) {
@@ -341,7 +344,105 @@ fn sanitize_vertex_schema_in_place(schema: &mut sonic_rs::Object) {
         }
     }
 
+    // Best-effort: collapse `anyOf` of string enums (or const->enum) into a single enum.
+    collapse_anyof_string_enums(schema);
+
     enforce_vertex_schema_allowlist(schema);
+}
+
+fn convert_const_to_enum(schema: &mut sonic_rs::Object) {
+    let Some(constant) = schema.remove(&"const") else {
+        return;
+    };
+
+    // Only preserve string consts; other types are dropped to keep behavior conservative.
+    let Some(s) = constant.as_str() else {
+        return;
+    };
+
+    if let Some(arr) = schema.get_mut(&"enum").and_then(|v| v.as_array_mut()) {
+        arr.push(s);
+        return;
+    }
+
+    let mut arr = sonic_rs::Array::with_capacity(1);
+    arr.push(s);
+    schema.insert(&"enum", arr.into_value());
+}
+
+fn collapse_anyof_string_enums(schema: &mut sonic_rs::Object) {
+    if schema.get(&"enum").is_some() {
+        return;
+    }
+    let Some(any_of) = schema.get(&"anyOf").and_then(|v| v.as_array()) else {
+        return;
+    };
+
+    // Only collapse into a string enum if the parent is missing type or already STRING.
+    if let Some(t) = schema.get(&"type").and_then(|v| v.as_str())
+        && t != "STRING"
+    {
+        return;
+    }
+
+    let mut values: Vec<String> = Vec::new();
+    let mut nullable = false;
+
+    for variant in any_of.iter() {
+        let Some(obj) = variant.as_object() else {
+            return;
+        };
+
+        // Variants must be string (or missing type) + enum-only. Anything else keeps anyOf.
+        if let Some(t) = obj.get(&"type").and_then(|v| v.as_str())
+            && t != "STRING"
+        {
+            return;
+        }
+        let Some(enum_arr) = obj.get(&"enum").and_then(|v| v.as_array()) else {
+            return;
+        };
+        if enum_arr.is_empty() {
+            return;
+        }
+        for (k, _) in obj.iter() {
+            if matches!(k, "type" | "enum" | "description" | "nullable") {
+                continue;
+            }
+            return;
+        }
+        if obj.get(&"nullable").and_then(|v| v.as_bool()) == Some(true) {
+            nullable = true;
+        }
+        for it in enum_arr.iter() {
+            let Some(s) = it.as_str() else {
+                return;
+            };
+            values.push(s.to_string());
+        }
+    }
+
+    let mut seen: HashSet<String> = HashSet::with_capacity(values.len());
+    let mut out: Vec<String> = Vec::with_capacity(values.len());
+    for s in values {
+        if seen.insert(s.clone()) {
+            out.push(s);
+        }
+    }
+    if out.is_empty() {
+        return;
+    }
+
+    let mut new_arr = sonic_rs::Array::with_capacity(out.len());
+    for s in out {
+        new_arr.push(&s);
+    }
+    schema.insert(&"enum", new_arr.into_value());
+    schema.insert(&"type", "STRING");
+    if nullable && schema.get(&"nullable").is_none() {
+        schema.insert(&"nullable", true);
+    }
+    schema.remove(&"anyOf");
 }
 
 fn normalize_type_field(schema: &mut sonic_rs::Object) {
@@ -629,5 +730,57 @@ mod tests {
 
         let out = sanitize_function_parameters_schema(&schema);
         assert_eq!(out.get("type").and_then(|v| v.as_str()), Some("ARRAY"));
+    }
+
+    #[test]
+    fn anyof_enum_and_const_string_collapses_to_enum() {
+        let mut status = sonic_rs::Object::new();
+        status.insert(&"description", "New status for the task");
+
+        let mut v1 = sonic_rs::Object::new();
+        v1.insert(&"type", "string");
+        let mut enums = sonic_rs::Array::with_capacity(3);
+        enums.push("pending");
+        enums.push("in_progress");
+        enums.push("completed");
+        v1.insert(&"enum", enums.into_value());
+
+        let mut v2 = sonic_rs::Object::new();
+        v2.insert(&"type", "string");
+        v2.insert(&"const", "deleted");
+
+        let mut any_of = sonic_rs::Array::with_capacity(2);
+        any_of.push(v1.into_value());
+        any_of.push(v2.into_value());
+        status.insert(&"anyOf", any_of.into_value());
+
+        let mut props = sonic_rs::Object::new();
+        props.insert(&"status", status.into_value());
+
+        let mut schema: HashMap<String, sonic_rs::Value> = HashMap::new();
+        schema.insert("properties".to_string(), props.into_value());
+
+        let out = sanitize_function_parameters_schema(&schema);
+        let props = out.get("properties").and_then(|v| v.as_object()).unwrap();
+        let status = props.get(&"status").and_then(|v| v.as_object()).unwrap();
+
+        assert_eq!(status.get(&"type").and_then(|v| v.as_str()), Some("STRING"));
+        assert_eq!(
+            status.get(&"description").and_then(|v| v.as_str()),
+            Some("New status for the task")
+        );
+        assert!(status.get(&"anyOf").is_none());
+
+        let values: Vec<&str> = status
+            .get(&"enum")
+            .and_then(|v| v.as_array())
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(
+            values,
+            vec!["pending", "in_progress", "completed", "deleted"]
+        );
     }
 }

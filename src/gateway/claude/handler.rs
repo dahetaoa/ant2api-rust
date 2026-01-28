@@ -389,7 +389,7 @@ async fn handle_stream_with_retry(
         let parse_res = crate::vertex::stream::parse_stream_with_result(
             resp,
             |data| {
-                let mut events: Vec<String> = Vec::new();
+                let mut events: Vec<(&'static str, String)> = Vec::new();
                 let mut saves: Vec<super::stream::SignatureSave> = Vec::new();
 
                 if let Some(usage) = data.response.usage_metadata.as_ref() {
@@ -408,10 +408,9 @@ async fn handle_stream_with_retry(
                 let sig_mgr = state.sig_mgr.clone();
                 async move {
                     // 先发事件（低延迟），再写签名缓存（不影响首包）。
-                    for ev in events {
-                        let name = claude_sse_event_name(&ev);
+                    for (event_name, ev) in events {
                         if tx
-                            .send(Ok(Event::default().event(name).data(ev)))
+                            .send(Ok(Event::default().event(event_name).data(ev)))
                             .await
                             .is_err()
                         {
@@ -454,13 +453,12 @@ async fn handle_stream_with_retry(
         };
 
         let mut client_disconnected = false;
-        for ev in writer.finish(output_tokens, stop_reason) {
+        for (event_name, ev) in writer.finish(output_tokens, stop_reason) {
             if client_disconnected {
                 continue;
             }
-            let name = claude_sse_event_name(&ev);
             if tx
-                .send(Ok(Event::default().event(name).data(ev)))
+                .send(Ok(Event::default().event(event_name).data(ev)))
                 .await
                 .is_err()
             {
@@ -486,29 +484,10 @@ async fn handle_stream_with_retry(
 }
 
 async fn send_sse_error(tx: &mpsc::Sender<Result<Event, Infallible>>, msg: &str) {
-    for ev in sse_error_events(msg) {
-        let name = claude_sse_event_name(&ev);
-        let _ = tx.send(Ok(Event::default().event(name).data(ev))).await;
-    }
-}
-
-fn claude_sse_event_name(json: &str) -> &'static str {
-    const PREFIX: &str = "{\"type\":\"";
-    let Some(rest) = json.strip_prefix(PREFIX) else {
-        return "message";
-    };
-    let Some(end) = rest.find('"') else {
-        return "message";
-    };
-    match &rest[..end] {
-        "message_start" => "message_start",
-        "content_block_start" => "content_block_start",
-        "content_block_delta" => "content_block_delta",
-        "content_block_stop" => "content_block_stop",
-        "message_delta" => "message_delta",
-        "message_stop" => "message_stop",
-        "error" => "error",
-        _ => "message",
+    for (event_name, ev) in sse_error_events(msg) {
+        let _ = tx
+            .send(Ok(Event::default().event(event_name).data(ev)))
+            .await;
     }
 }
 

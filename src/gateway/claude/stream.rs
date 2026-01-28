@@ -3,11 +3,20 @@ use crate::vertex::types::StreamDataPart;
 use serde::Serialize;
 
 /// Claude SSE: 写入 `{"type":"error","error":{"type":"api_error","message":...}}` 事件并结束。
-pub fn sse_error_events(msg: &str) -> Vec<String> {
-    let encoded = sonic_rs::to_string(msg).unwrap_or_else(|_| "\"\"".to_string());
-    let json =
-        format!("{{\"type\":\"error\",\"error\":{{\"type\":\"api_error\",\"message\":{encoded}}}}}");
-    vec![json, "{\"type\":\"message_stop\"}".to_string()]
+pub fn sse_error_events(msg: &str) -> Vec<(&'static str, String)> {
+    // 保持字段顺序稳定（对齐 Claude 官方输出），避免某些严格客户端按文本匹配解析失败。
+    let json = serde_json::json!({
+        "type": "error",
+        "error": {
+            "type": "api_error",
+            "message": msg,
+        }
+    });
+    let json = serde_json::to_string(&json).unwrap_or_else(|_| "{\"type\":\"error\"}".to_string());
+    vec![
+        ("error", json),
+        ("message_stop", "{\"type\":\"message_stop\"}".to_string()),
+    ]
 }
 
 #[derive(Debug)]
@@ -103,7 +112,10 @@ impl ClaudeStreamWriter {
     }
 
     /// 处理一个 Part，立即返回要发送的 SSE 事件。
-    pub fn process_part(&mut self, part: &StreamDataPart) -> (Vec<String>, Vec<SignatureSave>) {
+    pub fn process_part(
+        &mut self,
+        part: &StreamDataPart,
+    ) -> (Vec<(&'static str, String)>, Vec<SignatureSave>) {
         let mut events = Vec::new();
         let mut saves = Vec::new();
 
@@ -151,7 +163,7 @@ impl ClaudeStreamWriter {
     }
 
     /// 流结束时调用。
-    pub fn finish(&mut self, output_tokens: i32, stop_reason: &str) -> Vec<String> {
+    pub fn finish(&mut self, output_tokens: i32, stop_reason: &str) -> Vec<(&'static str, String)> {
         let mut events = Vec::new();
 
         // 若 thinking 块仍打开，刷新 signature
@@ -168,7 +180,7 @@ impl ClaudeStreamWriter {
         events
     }
 
-    fn open_block(&mut self, typ: BlockType) -> String {
+    fn open_block(&mut self, typ: BlockType) -> (&'static str, String) {
         let idx = self.next_index;
         self.next_index += 1;
         self.current_block = Some((idx, typ));
@@ -228,10 +240,10 @@ impl ClaudeStreamWriter {
         };
 
         self.collect_plain_event_for_log(json.clone());
-        to_json_string(&json)
+        ("content_block_start", to_json_string(&json))
     }
 
-    fn close_current_block(&mut self) -> Vec<String> {
+    fn close_current_block(&mut self) -> Vec<(&'static str, String)> {
         let Some((idx, _)) = self.current_block.take() else {
             return Vec::new();
         };
@@ -250,10 +262,10 @@ impl ClaudeStreamWriter {
         .to_value();
 
         self.collect_plain_event_for_log(json.clone());
-        vec![to_json_string(&json)]
+        vec![("content_block_stop", to_json_string(&json))]
     }
 
-    fn emit_message_start(&mut self) -> String {
+    fn emit_message_start(&mut self) -> (&'static str, String) {
         let msg_id = format!("msg_{}", self.request_id);
 
         let mut usage = sonic_rs::Object::new();
@@ -276,10 +288,10 @@ impl ClaudeStreamWriter {
 
         let json = outer.into_value();
         self.collect_plain_event_for_log(json.clone());
-        to_json_string(&json)
+        ("message_start", to_json_string(&json))
     }
 
-    fn emit_thinking_delta(&mut self, text: &str) -> String {
+    fn emit_thinking_delta(&mut self, text: &str) -> (&'static str, String) {
         let idx = self
             .current_block
             .map(|(i, _)| i)
@@ -311,10 +323,10 @@ impl ClaudeStreamWriter {
         .to_value();
 
         self.collect_delta_for_log(BlockType::Thinking, idx, text);
-        to_json_string(&json)
+        ("content_block_delta", to_json_string(&json))
     }
 
-    fn emit_text_delta(&mut self, text: &str) -> String {
+    fn emit_text_delta(&mut self, text: &str) -> (&'static str, String) {
         let idx = self
             .current_block
             .map(|(i, _)| i)
@@ -346,10 +358,10 @@ impl ClaudeStreamWriter {
         .to_value();
 
         self.collect_delta_for_log(BlockType::Text, idx, text);
-        to_json_string(&json)
+        ("content_block_delta", to_json_string(&json))
     }
 
-    fn emit_signature_delta(&mut self, index: i32, signature: &str) -> String {
+    fn emit_signature_delta(&mut self, index: i32, signature: &str) -> (&'static str, String) {
         #[derive(Serialize)]
         struct Delta<'a> {
             #[serde(rename = "type")]
@@ -376,10 +388,10 @@ impl ClaudeStreamWriter {
         .to_value();
 
         self.collect_plain_event_for_log(json.clone());
-        to_json_string(&json)
+        ("content_block_delta", to_json_string(&json))
     }
 
-    fn flush_signature_to_current_block(&mut self) -> Vec<String> {
+    fn flush_signature_to_current_block(&mut self) -> Vec<(&'static str, String)> {
         let Some((idx, BlockType::Thinking)) = self.current_block else {
             return Vec::new();
         };
@@ -414,7 +426,7 @@ impl ClaudeStreamWriter {
         &mut self,
         fc: &crate::vertex::types::FunctionCall,
         part_signature: &str,
-    ) -> (Vec<String>, Option<SignatureSave>) {
+    ) -> (Vec<(&'static str, String)>, Option<SignatureSave>) {
         let idx = self.next_index;
         self.next_index += 1;
 
@@ -471,8 +483,8 @@ impl ClaudeStreamWriter {
         self.collect_plain_event_for_log(stop_json.clone());
 
         let mut events = Vec::with_capacity(2);
-        events.push(to_json_string(&start_json));
-        events.push(to_json_string(&stop_json));
+        events.push(("content_block_start", to_json_string(&start_json)));
+        events.push(("content_block_stop", to_json_string(&stop_json)));
 
         let part_sig = part_signature.trim();
         let mut signature_to_save = String::new();
@@ -509,7 +521,7 @@ impl ClaudeStreamWriter {
         (events, save)
     }
 
-    fn emit_message_delta(&mut self, output_tokens: i32, stop_reason: &str) -> String {
+    fn emit_message_delta(&mut self, output_tokens: i32, stop_reason: &str) -> (&'static str, String) {
         let mut usage = sonic_rs::Object::new();
         usage.insert("output_tokens", output_tokens.max(0));
 
@@ -524,15 +536,15 @@ impl ClaudeStreamWriter {
 
         let json = outer.into_value();
         self.collect_plain_event_for_log(json.clone());
-        to_json_string(&json)
+        ("message_delta", to_json_string(&json))
     }
 
-    fn emit_message_stop(&mut self) -> String {
+    fn emit_message_stop(&mut self) -> (&'static str, String) {
         let mut outer = sonic_rs::Object::new();
         outer.insert("type", "message_stop");
         let json = outer.into_value();
         self.collect_plain_event_for_log(json.clone());
-        to_json_string(&json)
+        ("message_stop", to_json_string(&json))
     }
 
     fn collect_delta_for_log(&mut self, kind: BlockType, index: i32, text: &str) {
@@ -591,7 +603,36 @@ impl ClaudeStreamWriter {
 }
 
 fn to_json_string(v: &sonic_rs::Value) -> String {
-    sonic_rs::to_string(v).unwrap_or_else(|_| "{}".to_string())
+    // sonic_rs 的 Object 序列化不保证字段顺序稳定（每次构造的 HashBuilder 种子不同），
+    // 这里转为 serde_json::Value（默认 BTreeMap）以输出确定性的 key 顺序。
+    let raw = sonic_rs::to_string(v).unwrap_or_else(|_| "{}".to_string());
+    match serde_json::from_str::<serde_json::Value>(&raw) {
+        Ok(v) => serde_json::to_string(&v).unwrap_or(raw),
+        Err(_) => raw,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::to_json_string;
+
+    #[test]
+    fn to_json_string_orders_claude_delta_fields() {
+        let mut delta = sonic_rs::Object::new();
+        delta.insert("type", "thinking_delta");
+        delta.insert("thinking", "x");
+
+        let mut outer = sonic_rs::Object::new();
+        outer.insert("type", "content_block_delta");
+        outer.insert("index", 0);
+        outer.insert("delta", delta);
+
+        let s = to_json_string(&outer.into_value());
+        assert_eq!(
+            s,
+            r#"{"delta":{"thinking":"x","type":"thinking_delta"},"index":0,"type":"content_block_delta"}"#
+        );
+    }
 }
 
 trait ToValue {
