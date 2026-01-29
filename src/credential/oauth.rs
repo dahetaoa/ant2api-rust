@@ -434,9 +434,8 @@ fn build_oauth_http_client(cfg: &Config) -> anyhow::Result<reqwest::Client> {
     let mut builder = reqwest::Client::builder()
         .pool_max_idle_per_host(10)
         .pool_idle_timeout(Duration::from_secs(90))
-        // 对齐 Go 版本：禁用 HTTP/2（Go 端 ForceAttemptHTTP2=false）。
-        // Google OAuth 端点在 HTTP/2 下偶发返回 PROTOCOL_ERROR 导致刷新失败。
-        .http1_only();
+        // 强制启用 HTTP/2（覆盖之前的 http1_only 行为）。
+        .http2_prior_knowledge();
 
     if cfg.timeout_ms > 0 {
         builder = builder.timeout(Duration::from_millis(cfg.timeout_ms));

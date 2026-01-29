@@ -1,7 +1,7 @@
 use crate::config::Config;
 use crate::logging;
 use crate::vertex::types::{Request, Response};
-use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HOST, HeaderMap, HeaderValue, USER_AGENT};
+use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue, USER_AGENT};
 use sonic_rs::{JsonValueMutTrait, JsonValueTrait};
 use std::collections::HashMap;
 use std::time::Duration;
@@ -84,9 +84,8 @@ impl VertexClient {
         let mut builder = reqwest::Client::builder()
             .pool_max_idle_per_host(10)
             .pool_idle_timeout(Duration::from_secs(90))
-            // 对齐 Go 版本：禁用 HTTP/2（Go 端 ForceAttemptHTTP2=false）。
-            // 该后端在 HTTP/2 + Host 头组合下可能触发 PROTOCOL_ERROR。
-            .http1_only();
+            // 强制启用 HTTP/2（覆盖之前的 http1_only 行为）。
+            .http2_prior_knowledge();
 
         let timeout = if cfg.timeout_ms > 0 {
             Some(Duration::from_millis(cfg.timeout_ms))
@@ -111,12 +110,8 @@ impl VertexClient {
         })
     }
 
-    pub fn build_headers(&self, access_token: &str, endpoint: &Endpoint) -> HeaderMap {
+    pub fn build_headers(&self, access_token: &str, _endpoint: &Endpoint) -> HeaderMap {
         let mut h = HeaderMap::new();
-        h.insert(
-            HOST,
-            HeaderValue::from_str(&endpoint.host).unwrap_or(HeaderValue::from_static("")),
-        );
         h.insert(
             USER_AGENT,
             HeaderValue::from_str(&self.user_agent).unwrap_or(HeaderValue::from_static("ant2api")),
@@ -134,12 +129,8 @@ impl VertexClient {
         h
     }
 
-    pub fn build_stream_headers(&self, access_token: &str, endpoint: &Endpoint) -> HeaderMap {
+    pub fn build_stream_headers(&self, access_token: &str, _endpoint: &Endpoint) -> HeaderMap {
         let mut h = HeaderMap::new();
-        h.insert(
-            HOST,
-            HeaderValue::from_str(&endpoint.host).unwrap_or(HeaderValue::from_static("")),
-        );
         h.insert(
             USER_AGENT,
             HeaderValue::from_str(&self.user_agent).unwrap_or(HeaderValue::from_static("ant2api")),
