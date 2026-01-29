@@ -19,14 +19,13 @@ use crate::gateway::manager::templates::{self, ViewAccount, ViewQuotaGroup, to_v
 use crate::quota_pool::QuotaPoolManager;
 use crate::runtime_config::{self, WebUISettings};
 use crate::util::id;
-use crate::vertex::client::{Endpoint, VertexClient};
+use crate::vertex::client::VertexClient;
 
 use askama::Template;
 
 /// Manager 应用状态
 pub struct ManagerState {
     pub store: Arc<Store>,
-    pub endpoint: Endpoint,
     pub vertex: Arc<VertexClient>,
     pub quota_cache: QuotaCache,
     pub quota_pool: Arc<QuotaPoolManager>,
@@ -426,10 +425,11 @@ pub async fn handle_quota(
     if idx >= accounts.len() {
         return render_quota_error(&headers, session_id, "未找到对应账号");
     }
-    
+
+    let endpoint = runtime_config::current_endpoint();
     let (quota, cached, error) = state
         .quota_cache
-        .get_quota(&accounts[idx], &state.endpoint, &state.vertex, force)
+        .get_quota(&accounts[idx], &endpoint, &state.vertex, force)
         .await;
     
     if let Some(err_msg) = error {
@@ -518,13 +518,14 @@ pub async fn handle_quota_all(
         }
         return Json(serde_json::json!({"accounts": []})).into_response();
     }
-    
+
+    let endpoint = runtime_config::current_endpoint();
     // 并发获取所有配额
     let mut handles = Vec::with_capacity(accounts.len());
     
     for acc in accounts.iter() {
         let acc = acc.clone();
-        let endpoint = state.endpoint.clone();
+        let endpoint = endpoint.clone();
         let vertex = state.vertex.clone();
         let quota_cache = &state.quota_cache;
         
@@ -873,9 +874,10 @@ pub async fn handle_settings_post(Json(req): Json<WebUISettings>) -> Response {
     runtime_config::update(new_settings.clone());
     
     tracing::info!(
-        "设置已更新: Debug={}, UserAgent={}",
+        "设置已更新: Debug={}, UserAgent={}, EndpointMode={}",
         new_settings.debug,
-        new_settings.api_user_agent
+        new_settings.api_user_agent,
+        new_settings.endpoint_mode
     );
     
     Json(SettingsResponse {

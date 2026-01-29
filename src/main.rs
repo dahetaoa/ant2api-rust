@@ -16,8 +16,6 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tracing_subscriber::EnvFilter;
 
-const DEFAULT_BACKEND_HOST: &str = "daily-cloudcode-pa.sandbox.googleapis.com";
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cfg = config::Config::load();
@@ -50,27 +48,17 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("初始化 signature manager 失败")?;
 
-    let endpoint = vertex::client::Endpoint {
-        key: cfg.endpoint_mode.clone(),
-        host: DEFAULT_BACKEND_HOST.to_string(),
-    };
     let vertex = Arc::new(
         vertex::client::VertexClient::new(&cfg).context("初始化 VertexClient 失败")?,
     );
 
     // 配额池：后台刷新各账号配额，并用于按模型分组选择更“有余额”的账号。
     let quota_pool = Arc::new(quota_pool::QuotaPoolManager::new());
-    quota_pool::spawn_refresh_task(
-        store.clone(),
-        endpoint.clone(),
-        (*vertex).clone(),
-        quota_pool.clone(),
-    );
+    quota_pool::spawn_refresh_task(store.clone(), (*vertex).clone(), quota_pool.clone());
 
     // API 网关状态（OpenAI/Claude 共用同一份字段集合，便于注册多套路由）。
     let api_state = Arc::new(gateway::claude::ClaudeState {
         cfg: cfg.clone(),
-        endpoint: endpoint.clone(),
         vertex: (*vertex).clone(),
         store: store.clone(),
         quota_pool: quota_pool.clone(),
@@ -80,7 +68,6 @@ async fn main() -> anyhow::Result<()> {
     // Manager WebUI 状态
     let manager_state = Arc::new(gateway::manager::ManagerState {
         store: store.clone(),
-        endpoint: endpoint.clone(),
         vertex: vertex.clone(),
         quota_cache: gateway::manager::QuotaCache::new(),
         quota_pool: quota_pool.clone(),

@@ -3,7 +3,8 @@
 use crate::credential::store::Store;
 use crate::gateway::manager::quota::group_quota_groups;
 use crate::quota_pool::QuotaPoolManager;
-use crate::vertex::client::{Endpoint, VertexClient};
+use crate::vertex::client::VertexClient;
+use crate::runtime_config;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,16 +15,13 @@ use std::time::Duration;
 /// - 单账号拉取：默认 1 秒间隔（避免对后端造成压力）
 pub fn spawn_refresh_task(
     store: Arc<Store>,
-    endpoint: Endpoint,
     vertex: VertexClient,
     pool_mgr: Arc<QuotaPoolManager>,
 ) {
     tokio::spawn(async move {
         // 启动后立即执行一次，尽快填充配额池；随后按周期刷新。
         loop {
-            if let Err(e) =
-                refresh_once(store.clone(), &endpoint, &vertex, pool_mgr.clone()).await
-            {
+            if let Err(e) = refresh_once(store.clone(), &vertex, pool_mgr.clone()).await {
                 tracing::warn!("配额池后台刷新失败：{e:#}");
             }
             tokio::time::sleep(Duration::from_secs(10 * 60)).await;
@@ -33,10 +31,10 @@ pub fn spawn_refresh_task(
 
 async fn refresh_once(
     store: Arc<Store>,
-    endpoint: &Endpoint,
     vertex: &VertexClient,
     pool_mgr: Arc<QuotaPoolManager>,
 ) -> anyhow::Result<()> {
+    let endpoint = runtime_config::current_endpoint();
     let accounts = store.get_all().await;
     if accounts.is_empty() {
         pool_mgr.sync_valid_sessions(&HashSet::new()).await;
@@ -76,7 +74,7 @@ async fn refresh_once(
         };
 
         match vertex
-            .fetch_available_models(endpoint, &project_id, &acc.access_token, &acc.email)
+            .fetch_available_models(&endpoint, &project_id, &acc.access_token, &acc.email)
             .await
         {
             Ok(resp) => {
@@ -97,4 +95,3 @@ async fn refresh_once(
     tracing::info!("配额池后台刷新完成：成功 {ok}，失败 {failed}");
     Ok(())
 }
-

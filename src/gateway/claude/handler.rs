@@ -8,8 +8,9 @@ use crate::gateway::common::AccountContext;
 use crate::logging;
 use crate::quota_pool::QuotaPoolManager;
 use crate::signature::manager::Manager as SignatureManager;
+use crate::runtime_config;
 use crate::util::{id, model as modelutil};
-use crate::vertex::client::{ApiError, Endpoint, VertexClient};
+use crate::vertex::client::{ApiError, VertexClient};
 use axum::Json;
 use axum::body::Bytes;
 use axum::extract::OriginalUri;
@@ -29,7 +30,6 @@ use tokio_stream::wrappers::ReceiverStream;
 #[derive(Clone)]
 pub struct ClaudeState {
     pub cfg: crate::config::Config,
-    pub endpoint: Endpoint,
     pub vertex: VertexClient,
     pub store: Arc<CredentialStore>,
     pub quota_pool: Arc<QuotaPoolManager>,
@@ -47,6 +47,7 @@ pub async fn handle_list_models(
         logging::client_request(method.as_str(), uri.0.path(), &headers, &[]);
     }
 
+    let endpoint = runtime_config::current_endpoint();
     let mut attempts = state.store.enabled_count().await;
     if attempts < 1 {
         attempts = 1;
@@ -76,7 +77,7 @@ pub async fn handle_list_models(
 
         match state
             .vertex
-            .fetch_available_models(&state.endpoint, &project_id, &acc.access_token, &acc.email)
+            .fetch_available_models(&endpoint, &project_id, &acc.access_token, &acc.email)
             .await
         {
             Ok(v) => {
@@ -157,6 +158,7 @@ pub async fn handle_messages(
         logging::client_request(method.as_str(), uri.0.path(), &headers, body.as_ref());
     }
 
+    let endpoint = runtime_config::current_endpoint();
     let req: MessagesRequest = match sonic_rs::from_slice(body.as_ref()) {
         Ok(v) => v,
         Err(_) => {
@@ -253,7 +255,7 @@ pub async fn handle_messages(
 
         match state
             .vertex
-            .generate_content(&state.endpoint, &acc.access_token, &vreq, &acc.email)
+            .generate_content(&endpoint, &acc.access_token, &vreq, &acc.email)
             .await
         {
             Ok(v) => {
@@ -306,6 +308,7 @@ async fn handle_stream_with_retry(
     started_at: Instant,
 ) -> Response {
     let (tx, rx) = mpsc::channel::<Result<Event, Infallible>>(256);
+    let endpoint = runtime_config::current_endpoint();
 
     tokio::spawn(async move {
         let client_log = state.cfg.client_log_enabled();
@@ -347,7 +350,7 @@ async fn handle_stream_with_retry(
 
             match state
                 .vertex
-                .generate_content_stream(&state.endpoint, &acc.access_token, &vreq, &acc.email)
+                .generate_content_stream(&endpoint, &acc.access_token, &vreq, &acc.email)
                 .await
             {
                 Ok(r) => {

@@ -154,6 +154,33 @@
                 </h3>
             </div>
             <div class="p-6 space-y-5">
+                <!-- Backend Endpoint -->
+                <div>
+                    <label class="block text-sm font-medium text-slate-700 mb-1.5">
+                        后端请求地址
+                    </label>
+                    <div class="flex gap-3">
+                        <label class="flex-1 relative cursor-pointer">
+                            <input type="radio" name="endpointMode" value="production" class="peer sr-only" {% if
+                                settings.endpoint_mode=="production" || settings.endpoint_mode.is_empty() %}checked{% endif %} />
+                            <div
+                                class="px-4 py-3 rounded-lg border border-slate-200 text-center transition-all peer-checked:border-emerald-500 peer-checked:bg-emerald-50 peer-checked:text-emerald-700 hover:border-slate-300">
+                                <div class="font-medium text-sm">cloudcode-pa.googleapis.com</div>
+                                <div class="text-xs text-slate-400 mt-0.5">默认</div>
+                            </div>
+                        </label>
+                        <label class="flex-1 relative cursor-pointer">
+                            <input type="radio" name="endpointMode" value="daily" class="peer sr-only" {% if
+                                settings.endpoint_mode=="daily" %}checked{% endif %} />
+                            <div
+                                class="px-4 py-3 rounded-lg border border-slate-200 text-center transition-all peer-checked:border-emerald-500 peer-checked:bg-emerald-50 peer-checked:text-emerald-700 hover:border-slate-300">
+                                <div class="font-medium text-sm">daily-cloudcode-pa.sandbox.googleapis.com</div>
+                                <div class="text-xs text-slate-400 mt-0.5">Sandbox</div>
+                            </div>
+                        </label>
+                    </div>
+                    <p class="mt-1.5 text-xs text-slate-400">切换 Cloud Code API 的请求地址，仅影响后端请求。</p>
+                </div>
                 <!-- User Agent -->
                 <div>
                     <label class="block text-sm font-medium text-slate-700 mb-1.5">
@@ -284,6 +311,10 @@
                         document.getElementById('setting-api-key').value = data.apiKey || '';
                         document.getElementById('setting-webui-password').value = data.webuiPassword || '';
                         document.getElementById('setting-user-agent').value = data.userAgent || '';
+                        const endpointRadios = document.querySelectorAll('input[name="endpointMode"]');
+                        endpointRadios.forEach(r => {
+                            r.checked = r.value === (data.endpointMode || 'production');
+                        });
                         const debugRadios = document.querySelectorAll('input[name="debug"]');
                         debugRadios.forEach(r => {
                             r.checked = r.value === (data.debug || 'off');
@@ -306,6 +337,8 @@
                 const apiKey = document.getElementById('setting-api-key')?.value?.trim() || '';
                 const webuiPassword = document.getElementById('setting-webui-password')?.value?.trim() || '';
                 const userAgent = document.getElementById('setting-user-agent')?.value?.trim() || '';
+                const endpointRadio = document.querySelector('input[name="endpointMode"]:checked');
+                const endpointMode = endpointRadio?.value || 'production';
                 const debugRadio = document.querySelector('input[name="debug"]:checked');
                 const debug = debugRadio?.value || 'off';
                 const mrRadio = document.querySelector('input[name="gemini3MediaResolution"]:checked');
@@ -324,7 +357,7 @@
                         method: 'POST',
                         credentials: 'same-origin',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ apiKey, webuiPassword, debug, userAgent, gemini3MediaResolution })
+                        body: JSON.stringify({ apiKey, webuiPassword, debug, userAgent, gemini3MediaResolution, endpointMode })
                     });
                     const data = await resp.json().catch(() => ({}));
 

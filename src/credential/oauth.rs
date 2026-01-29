@@ -1,5 +1,6 @@
 use crate::config::Config;
 use crate::credential::types::Account;
+use crate::runtime_config;
 use anyhow::{anyhow, bail};
 use base64::Engine;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HOST, USER_AGENT};
@@ -235,9 +236,11 @@ async fn fetch_project_id_from_load_code_assist(
     }
 
     let client = oauth_http_client(cfg)?;
+    let host = runtime_config::current_endpoint_host();
+    let url = format!("https://{host}/v1internal:loadCodeAssist");
     let resp = client
-        .post("https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:loadCodeAssist")
-        .header(HOST, "daily-cloudcode-pa.sandbox.googleapis.com")
+        .post(url)
+        .header(HOST, host.as_str())
         .header(AUTHORIZATION, format!("Bearer {access_token}"))
         .header(USER_AGENT, cfg.api_user_agent.as_str())
         .header(CONTENT_TYPE, "application/json")

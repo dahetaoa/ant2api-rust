@@ -10,6 +10,11 @@ use std::sync::Arc;
 use crate::config::Config;
 use crate::logging::LogLevel;
 
+pub const DEFAULT_BACKEND_HOST: &str = "cloudcode-pa.googleapis.com";
+pub const DAILY_BACKEND_HOST: &str = "daily-cloudcode-pa.sandbox.googleapis.com";
+pub const ENDPOINT_MODE_PRODUCTION: &str = "production";
+pub const ENDPOINT_MODE_DAILY: &str = "daily";
+
 /// 运行时配置快照。
 #[derive(Debug, Clone)]
 pub struct RuntimeSettings {
@@ -23,6 +28,8 @@ pub struct RuntimeSettings {
     pub debug: String,
     /// API Key（仅存储，当前不用于鉴权）
     pub api_key: String,
+    /// 后端请求地址模式
+    pub endpoint_mode: String,
     /// 服务端口（只读，用于 OAuth redirect_uri）
     pub port: u16,
 }
@@ -36,6 +43,7 @@ impl RuntimeSettings {
             gemini3_media_resolution: normalize_media_resolution(&cfg.gemini3_media_resolution),
             debug: cfg.debug.clone(),
             api_key: cfg.api_key.clone(),
+            endpoint_mode: normalize_endpoint_mode(&cfg.endpoint_mode),
             port: cfg.port,
         }
     }
@@ -66,6 +74,7 @@ pub fn get() -> Arc<RuntimeSettings> {
             gemini3_media_resolution: String::new(),
             debug: String::from("off"),
             api_key: String::new(),
+            endpoint_mode: ENDPOINT_MODE_PRODUCTION.to_string(),
             port: 8045,
         }))
 }
@@ -86,6 +95,8 @@ pub struct WebUISettings {
     pub debug: String,
     pub user_agent: String,
     pub gemini3_media_resolution: String,
+    #[serde(default)]
+    pub endpoint_mode: String,
 }
 
 impl WebUISettings {
@@ -97,6 +108,7 @@ impl WebUISettings {
             debug: rt.debug.clone(),
             user_agent: rt.api_user_agent.clone(),
             gemini3_media_resolution: rt.gemini3_media_resolution.clone(),
+            endpoint_mode: rt.endpoint_mode.clone(),
         }
     }
 
@@ -108,6 +120,10 @@ impl WebUISettings {
         let debug = self.debug.trim().to_lowercase();
         if !debug.is_empty() && debug != "off" && debug != "low" && debug != "high" {
             return Err("日志级别必须是 off、low 或 high");
+        }
+        let endpoint_mode = self.normalized_endpoint_mode();
+        if endpoint_mode != ENDPOINT_MODE_PRODUCTION && endpoint_mode != ENDPOINT_MODE_DAILY {
+            return Err("后端请求地址无效");
         }
         Ok(())
     }
@@ -126,6 +142,11 @@ impl WebUISettings {
         }
     }
 
+    /// 标准化 endpoint mode 值。
+    pub fn normalized_endpoint_mode(&self) -> String {
+        normalize_endpoint_mode(&self.endpoint_mode)
+    }
+
     /// 应用到运行时配置。
     pub fn apply_to_runtime(&self, current: &RuntimeSettings) -> RuntimeSettings {
         RuntimeSettings {
@@ -134,6 +155,7 @@ impl WebUISettings {
             gemini3_media_resolution: normalize_media_resolution(&self.gemini3_media_resolution),
             debug: self.normalized_debug(),
             api_key: self.api_key.trim().to_string(),
+            endpoint_mode: self.normalized_endpoint_mode(),
             port: current.port,
         }
     }
@@ -148,6 +170,38 @@ fn normalize_media_resolution(value: &str) -> String {
     }
 }
 
+pub fn normalize_endpoint_mode(value: &str) -> String {
+    let v = value.trim();
+    if v.eq_ignore_ascii_case(ENDPOINT_MODE_DAILY) {
+        ENDPOINT_MODE_DAILY.to_string()
+    } else {
+        ENDPOINT_MODE_PRODUCTION.to_string()
+    }
+}
+
+pub fn endpoint_host_for_mode(value: &str) -> &'static str {
+    let v = value.trim();
+    if v.eq_ignore_ascii_case(ENDPOINT_MODE_DAILY) {
+        DAILY_BACKEND_HOST
+    } else {
+        DEFAULT_BACKEND_HOST
+    }
+}
+
+pub fn current_endpoint_host() -> String {
+    let settings = get();
+    endpoint_host_for_mode(&settings.endpoint_mode).to_string()
+}
+
+pub fn current_endpoint() -> crate::vertex::client::Endpoint {
+    let settings = get();
+    let mode = normalize_endpoint_mode(&settings.endpoint_mode);
+    crate::vertex::client::Endpoint {
+        key: mode,
+        host: endpoint_host_for_mode(&settings.endpoint_mode).to_string(),
+    }
+}
+
 /// 持久化设置到 .env 文件。
 pub fn persist_to_dotenv(settings: &WebUISettings) -> Result<(), String> {
     let updates = [
@@ -156,6 +210,7 @@ pub fn persist_to_dotenv(settings: &WebUISettings) -> Result<(), String> {
         ("DEBUG", &settings.normalized_debug()),
         ("API_USER_AGENT", settings.user_agent.trim()),
         ("GEMINI3_MEDIA_RESOLUTION", &normalize_media_resolution(&settings.gemini3_media_resolution)),
+        ("ENDPOINT_MODE", &settings.normalized_endpoint_mode()),
     ];
 
     let dotenv_path = find_or_create_dotenv_path()
@@ -279,6 +334,15 @@ mod tests {
         assert_eq!(normalize_media_resolution("  HIGH  "), "high");
         assert_eq!(normalize_media_resolution("invalid"), "");
         assert_eq!(normalize_media_resolution(""), "");
+    }
+
+    #[test]
+    fn test_normalize_endpoint_mode() {
+        assert_eq!(normalize_endpoint_mode("daily"), ENDPOINT_MODE_DAILY);
+        assert_eq!(normalize_endpoint_mode("DAILY"), ENDPOINT_MODE_DAILY);
+        assert_eq!(normalize_endpoint_mode("production"), ENDPOINT_MODE_PRODUCTION);
+        assert_eq!(normalize_endpoint_mode(""), ENDPOINT_MODE_PRODUCTION);
+        assert_eq!(normalize_endpoint_mode("invalid"), ENDPOINT_MODE_PRODUCTION);
     }
 
     #[test]
