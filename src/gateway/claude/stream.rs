@@ -150,7 +150,7 @@ impl ClaudeStreamWriter {
             }
             events.push(self.emit_text_delta(&part.text));
         } else if let Some(fc) = &part.function_call {
-            // tool_use：关闭当前块，发送完整 tool_use 块
+            // tool_use：关闭当前块，按 Claude SSE 规范输出 tool_use，并通过 input_json_delta 传输 input
             events.extend(self.close_current_block());
             let (tool_events, save) = self.emit_tool_use(fc, &part.thought_signature);
             events.extend(tool_events);
@@ -454,13 +454,32 @@ impl ClaudeStreamWriter {
         }
 
         #[derive(Serialize)]
+        struct InputJsonDelta<'a> {
+            #[serde(rename = "type")]
+            typ: &'a str,
+            partial_json: &'a str,
+        }
+
+        #[derive(Serialize)]
+        struct Delta<'a> {
+            #[serde(rename = "type")]
+            typ: &'a str,
+            index: i32,
+            delta: InputJsonDelta<'a>,
+        }
+
+        #[derive(Serialize)]
         struct Stop<'a> {
             #[serde(rename = "type")]
             typ: &'a str,
             index: i32,
         }
 
-        let input = sonic_rs::to_value(&fc.args).unwrap_or_default();
+        // Claude 官方 SSE：content_block_start 的 tool_use.input 为空对象，真实 input 通过 input_json_delta 流式传输。
+        let input_value = sonic_rs::to_value(&fc.args).unwrap_or_default();
+        let input_json = to_json_string(&input_value);
+        let empty_input = sonic_rs::Object::new().into_value();
+
         let start_json = Start {
             typ: "content_block_start",
             index: idx,
@@ -468,7 +487,16 @@ impl ClaudeStreamWriter {
                 typ: "tool_use",
                 id: &tool_id,
                 name: fc.name.as_str(),
-                input,
+                input: empty_input,
+            },
+        }
+        .to_value();
+        let delta_json = Delta {
+            typ: "content_block_delta",
+            index: idx,
+            delta: InputJsonDelta {
+                typ: "input_json_delta",
+                partial_json: input_json.as_str(),
             },
         }
         .to_value();
@@ -480,10 +508,12 @@ impl ClaudeStreamWriter {
 
         // 事件优先：先把 tool_use 发出去，签名保存交给 handler 在后面异步处理。
         self.collect_plain_event_for_log(start_json.clone());
+        self.collect_plain_event_for_log(delta_json.clone());
         self.collect_plain_event_for_log(stop_json.clone());
 
-        let mut events = Vec::with_capacity(2);
+        let mut events = Vec::with_capacity(3);
         events.push(("content_block_start", to_json_string(&start_json)));
+        events.push(("content_block_delta", to_json_string(&delta_json)));
         events.push(("content_block_stop", to_json_string(&stop_json)));
 
         let part_sig = part_signature.trim();
@@ -633,6 +663,63 @@ mod tests {
             r#"{"delta":{"thinking":"x","type":"thinking_delta"},"index":0,"type":"content_block_delta"}"#
         );
     }
+
+    #[test]
+    fn tool_use_sse_sends_input_via_input_json_delta() {
+        use super::ClaudeStreamWriter;
+        use crate::vertex::types::{FunctionCall, StreamDataPart};
+        use std::collections::HashMap;
+
+        let mut args = HashMap::new();
+        args.insert(
+            "command".to_string(),
+            sonic_rs::to_value("ls -la").unwrap(),
+        );
+        args.insert(
+            "description".to_string(),
+            sonic_rs::to_value("列出当前目录下的所有文件").unwrap(),
+        );
+
+        let part = StreamDataPart {
+            text: String::new(),
+            function_call: Some(FunctionCall {
+                id: "toolu_test".to_string(),
+                name: "Bash".to_string(),
+                args,
+            }),
+            inline_data: None,
+            thought: false,
+            thought_signature: String::new(),
+        };
+
+        let mut writer = ClaudeStreamWriter::new(
+            "req_test".to_string(),
+            "claude-3-opus-20240229".to_string(),
+        );
+        let (events, _saves) = writer.process_part(&part);
+
+        assert_eq!(events.len(), 4);
+        assert_eq!(events[0].0, "message_start");
+        assert_eq!(events[1].0, "content_block_start");
+        assert_eq!(events[2].0, "content_block_delta");
+        assert_eq!(events[3].0, "content_block_stop");
+
+        let start = serde_json::from_str::<serde_json::Value>(&events[1].1).unwrap();
+        assert_eq!(start["type"], "content_block_start");
+        assert_eq!(start["content_block"]["type"], "tool_use");
+        assert_eq!(start["content_block"]["name"], "Bash");
+        assert_eq!(start["content_block"]["id"], "toolu_test");
+        assert!(start["content_block"]["input"].is_object());
+        assert_eq!(start["content_block"]["input"].as_object().unwrap().len(), 0);
+
+        let delta = serde_json::from_str::<serde_json::Value>(&events[2].1).unwrap();
+        assert_eq!(delta["type"], "content_block_delta");
+        assert_eq!(delta["delta"]["type"], "input_json_delta");
+        let partial = delta["delta"]["partial_json"].as_str().unwrap();
+        assert!(partial.contains("ls -la"));
+        assert!(partial.contains("列出当前目录下的所有文件"));
+    }
+
 }
 
 trait ToValue {

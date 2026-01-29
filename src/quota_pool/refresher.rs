@@ -12,7 +12,7 @@ use std::time::Duration;
 /// 启动后台刷新任务。
 ///
 /// - 间隔：10 分钟
-/// - 单账号拉取：默认 1 秒间隔（避免对后端造成压力）
+/// - 单账号拉取：默认 0.2 秒间隔（避免对后端造成压力）
 pub fn spawn_refresh_task(
     store: Arc<Store>,
     vertex: VertexClient,
@@ -88,8 +88,8 @@ async fn refresh_once(
             }
         }
 
-        // 限速：每秒最多 1 个账号请求
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        // 限速：每秒最多 5 个账号请求
+        tokio::time::sleep(Duration::from_millis(200)).await;
     }
 
     tracing::info!("配额池后台刷新完成：成功 {ok}，失败 {failed}");

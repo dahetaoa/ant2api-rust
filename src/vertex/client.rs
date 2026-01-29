@@ -73,6 +73,7 @@ impl ApiError {
 #[derive(Debug, Clone)]
 pub struct VertexClient {
     http: reqwest::Client,
+    http_stream: reqwest::Client,
     retry_status_codes: Vec<u16>,
     retry_max_attempts: usize,
     user_agent: String,
@@ -81,10 +82,16 @@ pub struct VertexClient {
 
 impl VertexClient {
     pub fn new(cfg: &Config) -> Result<Self, anyhow::Error> {
-        let mut builder = reqwest::Client::builder()
+        // 大多数后端请求维持 HTTP/1.1（拉取模型/非流式）。
+        let mut http1_builder = reqwest::Client::builder()
             .pool_max_idle_per_host(10)
             .pool_idle_timeout(Duration::from_secs(90))
-            // 强制启用 HTTP/2（覆盖之前的 http1_only 行为）。
+            .http1_only();
+
+        // 仅后端流式接口强制使用 HTTP/2（SSE）。
+        let mut http2_stream_builder = reqwest::Client::builder()
+            .pool_max_idle_per_host(10)
+            .pool_idle_timeout(Duration::from_secs(90))
             .http2_prior_knowledge();
 
         let timeout = if cfg.timeout_ms > 0 {
@@ -93,16 +100,21 @@ impl VertexClient {
             None
         };
         if let Some(t) = timeout {
-            builder = builder.timeout(t);
+            http1_builder = http1_builder.timeout(t);
+            http2_stream_builder = http2_stream_builder.timeout(t);
         }
 
         if !cfg.proxy.trim().is_empty() {
-            builder = builder.proxy(reqwest::Proxy::all(cfg.proxy.trim())?);
+            // Proxy 不保证可 Clone，这里各自构建一次避免 trait 约束。
+            http1_builder = http1_builder.proxy(reqwest::Proxy::all(cfg.proxy.trim())?);
+            http2_stream_builder = http2_stream_builder.proxy(reqwest::Proxy::all(cfg.proxy.trim())?);
         }
 
-        let http = builder.build()?;
+        let http = http1_builder.build()?;
+        let http_stream = http2_stream_builder.build()?;
         Ok(Self {
             http,
+            http_stream,
             retry_status_codes: cfg.retry_status_codes.clone(),
             retry_max_attempts: cfg.retry_max_attempts.max(1),
             user_agent: cfg.api_user_agent.clone(),
@@ -173,7 +185,7 @@ impl VertexClient {
             }
             let start = std::time::Instant::now();
             let resp = self
-                .http
+                .http_stream
                 .post(url.clone())
                 .headers(headers)
                 .body(body)

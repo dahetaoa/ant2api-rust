@@ -434,8 +434,9 @@ fn build_oauth_http_client(cfg: &Config) -> anyhow::Result<reqwest::Client> {
     let mut builder = reqwest::Client::builder()
         .pool_max_idle_per_host(10)
         .pool_idle_timeout(Duration::from_secs(90))
-        // 强制启用 HTTP/2（覆盖之前的 http1_only 行为）。
-        .http2_prior_knowledge();
+        // OAuth 刷新/换取 token 请求仍走 HTTP/1.1。
+        // Google OAuth 端点在 HTTP/2 下偶发返回 PROTOCOL_ERROR 导致刷新失败。
+        .http1_only();
 
     if cfg.timeout_ms > 0 {
         builder = builder.timeout(Duration::from_millis(cfg.timeout_ms));
