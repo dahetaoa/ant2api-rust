@@ -125,16 +125,25 @@
                             </div>
                         </label>
                         <label class="flex-1 relative cursor-pointer">
+                            <input type="radio" name="debug" value="medium" class="peer sr-only" {% if
+                                settings.debug=="medium" %}checked{% endif %} />
+                            <div
+                                class="px-4 py-3 rounded-lg border border-slate-200 text-center transition-all peer-checked:border-blue-500 peer-checked:bg-blue-50 peer-checked:text-blue-700 hover:border-slate-300">
+                                <div class="font-medium text-sm">详细</div>
+                                <div class="text-xs text-slate-400 mt-0.5">medium</div>
+                            </div>
+                        </label>
+                        <label class="flex-1 relative cursor-pointer">
                             <input type="radio" name="debug" value="high" class="peer sr-only" {% if
                                 settings.debug=="high" %}checked{% endif %} />
                             <div
                                 class="px-4 py-3 rounded-lg border border-slate-200 text-center transition-all peer-checked:border-blue-500 peer-checked:bg-blue-50 peer-checked:text-blue-700 hover:border-slate-300">
-                                <div class="font-medium text-sm">详细</div>
+                                <div class="font-medium text-sm">原始</div>
                                 <div class="text-xs text-slate-400 mt-0.5">high</div>
                             </div>
                         </label>
                     </div>
-                    <p class="mt-1.5 text-xs text-slate-400">设置服务端日志输出级别，<strong>high</strong> 将输出完整请求/响应内容</p>
+                    <p class="mt-1.5 text-xs text-slate-400">设置服务端日志输出级别：<strong>medium</strong> 为“旧 high”（格式化输出），<strong>high</strong> 为完全原始流式输出</p>
                 </div>
             </div>
         </div>

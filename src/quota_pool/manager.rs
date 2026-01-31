@@ -1,6 +1,6 @@
 use crate::gateway::manager::quota::{
-    QUOTA_GROUP_CLAUDE_GPT, QUOTA_GROUP_GEMINI25, QUOTA_GROUP_GEMINI3_FLASH, QUOTA_GROUP_GEMINI3_PRO,
-    QUOTA_GROUP_GEMINI3_PRO_IMAGE, QuotaGroup,
+    QUOTA_GROUP_CLAUDE_GPT, QUOTA_GROUP_GEMINI3_FLASH, QUOTA_GROUP_GEMINI3_PRO,
+    QUOTA_GROUP_GEMINI3_PRO_IMAGE, QUOTA_GROUP_GEMINI25, QuotaGroup,
 };
 use crate::quota_pool::selector;
 use crate::quota_pool::types::{PoolEntry, QuotaPool};
@@ -72,10 +72,8 @@ impl QuotaPoolManager {
                     };
 
                     // remainingFraction=0 且 resetTime 在未来：更符合“冷却”语义，避免被频繁选中。
-                    let should_cooldown = frac <= 0.0
-                        && reset_dt
-                            .as_ref()
-                            .map_or(false, |rt| *rt > now);
+                    let should_cooldown =
+                        frac <= 0.0 && reset_dt.as_ref().map_or(false, |rt| *rt > now);
                     if should_cooldown {
                         pool.active.remove(session_id);
                         if let Some(rt) = reset_dt {

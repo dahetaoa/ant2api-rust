@@ -3,22 +3,25 @@ use sonic_rs::prelude::*;
 use std::borrow::Cow;
 use std::time::Duration;
 
-/// 日志等级（对齐 Go 版本行为）：
+/// 日志等级（对齐 Go 版本行为，并扩展 raw high）：
 /// - off：不输出客户端/后端的详细请求响应
-/// - low：输出客户端请求/响应
-/// - high：输出客户端 + 后端请求/响应
+/// - low：输出客户端请求/响应（格式化/脱敏）
+/// - medium：输出客户端 + 后端请求/响应（格式化/脱敏；等同于旧 high）
+/// - high：输出客户端 + 后端请求/响应（完全原始：不折叠/不转换/不格式化；流式逐条输出）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum LogLevel {
     Off = 0,
     Low = 1,
-    High = 2,
+    Medium = 2,
+    High = 3,
 }
 
 impl LogLevel {
     pub fn parse(debug: &str) -> Self {
         match debug.trim().to_lowercase().as_str() {
             "low" | "client" => Self::Low,
-            "high" | "backend" | "all" => Self::High,
+            "medium" | "backend" => Self::Medium,
+            "high" | "all" | "raw" => Self::High,
             _ => Self::Off,
         }
     }
@@ -28,12 +31,50 @@ impl LogLevel {
     }
 
     pub fn backend_enabled(self) -> bool {
+        self >= Self::Medium
+    }
+
+    /// 是否启用“完全原始”日志（high）。
+    pub fn raw_enabled(self) -> bool {
         self >= Self::High
     }
 }
 
 pub fn format_duration_ms(d: Duration) -> i64 {
     d.as_millis().min(i64::MAX as u128) as i64
+}
+
+pub fn backend_response_divider_raw() {
+    tracing::info!("\n---------------------- 后端响应（RAW） ----------------------");
+}
+
+pub fn client_response_divider_raw() {
+    tracing::info!("\n---------------------- 客户端响应（RAW） ----------------------");
+}
+
+pub fn client_request_raw(method: &str, path: &str, headers: &HeaderMap, body: &[u8]) {
+    tracing::info!(
+        "\n================== 客户端请求（RAW） ==================\n[客户端请求] {method} {path}\n[客户端请求头]\n{}\n[客户端请求体]\n{}\n=========================================================",
+        format_headers_raw(headers),
+        format_bytes_raw(body),
+    );
+}
+
+pub fn client_response_raw(status: u16, duration: Duration, body: &[u8]) {
+    client_response_divider_raw();
+    tracing::info!(
+        "\n================== 客户端响应（RAW） ==================\n[客户端响应] {} {}ms\n{}\n=========================================================",
+        status,
+        format_duration_ms(duration),
+        format_bytes_raw(body),
+    );
+}
+
+pub fn client_stream_event_raw(event_name: Option<&str>, data: &str) {
+    match event_name {
+        Some(name) => tracing::info!("event: {}\ndata: {}\n", name, data),
+        None => tracing::info!("data: {}\n", data),
+    }
 }
 
 pub fn client_request(method: &str, path: &str, headers: &HeaderMap, body: &[u8]) {
@@ -71,6 +112,14 @@ pub fn backend_request(method: &str, url: &str, headers: &HeaderMap, body: &[u8]
     );
 }
 
+pub fn backend_request_raw(method: &str, url: &str, headers: &HeaderMap, body: &[u8]) {
+    tracing::info!(
+        "\n=================== 后端请求（RAW） ===================\n[后端请求] {method} {url}\n[后端请求头]\n{}\n[后端请求体]\n{}\n=========================================================",
+        format_headers_raw(headers),
+        format_bytes_raw(body),
+    );
+}
+
 pub fn backend_response(status: u16, duration: Duration, body: &[u8]) {
     tracing::info!(
         "\n====================== 后端响应 ========================\n[后端响应] {} {}ms\n{}\n==========================================================",
@@ -78,6 +127,21 @@ pub fn backend_response(status: u16, duration: Duration, body: &[u8]) {
         format_duration_ms(duration),
         format_body_bytes(body)
     );
+}
+
+pub fn backend_response_raw(status: u16, duration: Duration, body: &[u8]) {
+    backend_response_divider_raw();
+    tracing::info!(
+        "\n=================== 后端响应（RAW） ===================\n[后端响应] {} {}ms\n{}\n=========================================================",
+        status,
+        format_duration_ms(duration),
+        format_bytes_raw(body),
+    );
+}
+
+pub fn backend_stream_line_raw(line: &[u8]) {
+    // 不做任何 JSON 解析/格式化；尽量原样输出（仅在非 UTF-8 时降级为 lossy）。
+    tracing::info!("{}", String::from_utf8_lossy(line));
 }
 
 pub fn backend_stream_response(
@@ -172,6 +236,29 @@ fn format_body_bytes(bytes: &[u8]) -> String {
     match sonic_rs::from_slice::<sonic_rs::Value>(bytes) {
         Ok(v) => format_body_value(&v),
         Err(_) => truncate_text_for_log(&String::from_utf8_lossy(bytes)),
+    }
+}
+
+fn format_headers_raw(headers: &HeaderMap) -> String {
+    let mut out = String::new();
+    for (name, value) in headers.iter() {
+        let key = name.as_str();
+        let val = value.to_str().unwrap_or("<non-utf8>");
+        out.push_str(key);
+        out.push_str(": ");
+        out.push_str(val);
+        out.push('\n');
+    }
+    out
+}
+
+fn format_bytes_raw(bytes: &[u8]) -> String {
+    if bytes.is_empty() {
+        return String::new();
+    }
+    match std::str::from_utf8(bytes) {
+        Ok(s) => s.to_string(),
+        Err(_) => String::from_utf8_lossy(bytes).to_string(),
     }
 }
 

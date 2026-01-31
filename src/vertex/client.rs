@@ -107,7 +107,8 @@ impl VertexClient {
         if !cfg.proxy.trim().is_empty() {
             // Proxy 不保证可 Clone，这里各自构建一次避免 trait 约束。
             http1_builder = http1_builder.proxy(reqwest::Proxy::all(cfg.proxy.trim())?);
-            http2_stream_builder = http2_stream_builder.proxy(reqwest::Proxy::all(cfg.proxy.trim())?);
+            http2_stream_builder =
+                http2_stream_builder.proxy(reqwest::Proxy::all(cfg.proxy.trim())?);
         }
 
         let http = http1_builder.build()?;
@@ -168,7 +169,9 @@ impl VertexClient {
             let body = sonic_rs::to_vec(req)?;
             let headers = self.build_headers(access_token, endpoint);
             if self.log_level.backend_enabled() {
-                if let Ok(mut v) = sonic_rs::from_slice::<sonic_rs::Value>(&body) {
+                if self.log_level.raw_enabled() {
+                    logging::backend_request_raw("POST", &url, &headers, &body);
+                } else if let Ok(mut v) = sonic_rs::from_slice::<sonic_rs::Value>(&body) {
                     if let Some(obj) = v.as_object_mut() {
                         obj.insert("account", sonic_rs::Value::from(email));
                         if let Ok(log_body) = sonic_rs::to_vec(&v) {
@@ -195,7 +198,11 @@ impl VertexClient {
             let status = resp.status();
             let bytes = resp.bytes().await?;
             if self.log_level.backend_enabled() {
-                logging::backend_response(status.as_u16(), start.elapsed(), &bytes);
+                if self.log_level.raw_enabled() {
+                    logging::backend_response_raw(status.as_u16(), start.elapsed(), &bytes);
+                } else {
+                    logging::backend_response(status.as_u16(), start.elapsed(), &bytes);
+                }
             }
             if !status.is_success() {
                 return Err(extract_error_details(status.as_u16(), &bytes));
@@ -217,7 +224,9 @@ impl VertexClient {
             let body = sonic_rs::to_vec(req)?;
             let headers = self.build_stream_headers(access_token, endpoint);
             if self.log_level.backend_enabled() {
-                if let Ok(mut v) = sonic_rs::from_slice::<sonic_rs::Value>(&body) {
+                if self.log_level.raw_enabled() {
+                    logging::backend_request_raw("POST", &url, &headers, &body);
+                } else if let Ok(mut v) = sonic_rs::from_slice::<sonic_rs::Value>(&body) {
                     if let Some(obj) = v.as_object_mut() {
                         obj.insert("account", sonic_rs::Value::from(email));
                         if let Ok(log_body) = sonic_rs::to_vec(&v) {
@@ -245,7 +254,11 @@ impl VertexClient {
                 let status = resp.status();
                 let bytes = resp.bytes().await?;
                 if self.log_level.backend_enabled() {
-                    logging::backend_response(status.as_u16(), start.elapsed(), &bytes);
+                    if self.log_level.raw_enabled() {
+                        logging::backend_response_raw(status.as_u16(), start.elapsed(), &bytes);
+                    } else {
+                        logging::backend_response(status.as_u16(), start.elapsed(), &bytes);
+                    }
                 }
                 return Err(extract_error_details(status.as_u16(), &bytes));
             }
@@ -266,7 +279,9 @@ impl VertexClient {
         let headers = self.build_headers(access_token, endpoint);
         let start = std::time::Instant::now();
         if self.log_level.backend_enabled() {
-            if let Ok(mut v) = sonic_rs::from_slice::<sonic_rs::Value>(&body) {
+            if self.log_level.raw_enabled() {
+                logging::backend_request_raw("POST", &url, &headers, &body);
+            } else if let Ok(mut v) = sonic_rs::from_slice::<sonic_rs::Value>(&body) {
                 if let Some(obj) = v.as_object_mut() {
                     obj.insert("account", sonic_rs::Value::from(email));
                     if let Ok(log_body) = sonic_rs::to_vec(&v) {
@@ -293,7 +308,11 @@ impl VertexClient {
         let status = resp.status();
         let bytes = resp.bytes().await?;
         if self.log_level.backend_enabled() {
-            logging::backend_response(status.as_u16(), start.elapsed(), &bytes);
+            if self.log_level.raw_enabled() {
+                logging::backend_response_raw(status.as_u16(), start.elapsed(), &bytes);
+            } else {
+                logging::backend_response(status.as_u16(), start.elapsed(), &bytes);
+            }
         }
         if !status.is_success() {
             return Err(extract_error_details(status.as_u16(), &bytes));

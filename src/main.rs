@@ -11,7 +11,7 @@ pub mod vertex;
 
 use anyhow::Context;
 use axum::routing::{get, post};
-use axum::{middleware, Router};
+use axum::{Router, middleware};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tracing_subscriber::EnvFilter;
@@ -48,9 +48,8 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("初始化 signature manager 失败")?;
 
-    let vertex = Arc::new(
-        vertex::client::VertexClient::new(&cfg).context("初始化 VertexClient 失败")?,
-    );
+    let vertex =
+        Arc::new(vertex::client::VertexClient::new(&cfg).context("初始化 VertexClient 失败")?);
 
     // 配额池：后台刷新各账号配额，并用于按模型分组选择更“有余额”的账号。
     let quota_pool = Arc::new(quota_pool::QuotaPoolManager::new());
@@ -181,7 +180,8 @@ async fn handle_health() -> &'static str {
 }
 
 fn init_tracing(cfg: &config::Config) {
-    // Go 版的 DEBUG=low/high 主要控制"客户端/后端详细日志块"。
+    // Go 版的 DEBUG=off/low/high 主要控制"客户端/后端详细日志块"。
+    // Rust 版扩展：DEBUG=medium（旧 high：格式化/脱敏），DEBUG=high（raw：完全原始流式输出）。
     // 这里默认把依赖库日志控制在 warn（避免噪声），但确保本项目自身日志至少为 info，
     // 以免环境中预设的 RUST_LOG=warn 把关键调试日志过滤掉。
     let debug = cfg.debug.trim().to_lowercase();

@@ -63,6 +63,7 @@ pub struct FunctionCall {
     #[serde(skip_serializing_if = "String::is_empty", default)]
     pub id: String,
     pub name: String,
+    #[serde(default)]
     pub args: HashMap<String, sonic_rs::Value>,
 }
 
@@ -412,4 +413,43 @@ pub struct StreamResult {
     pub usage: Option<UsageMetadata>,
     pub tool_calls: Vec<ToolCallInfo>,
     pub thought_signature: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::StreamData;
+
+    #[test]
+    fn streamdata_deserializes_functioncall_without_args() {
+        let json = r#"
+        {
+          "response": {
+            "candidates": [
+              {
+                "content": {
+                  "role": "model",
+                  "parts": [
+                    {
+                      "functionCall": {
+                        "name": "ExitPlanMode",
+                        "id": "toolu_test"
+                      }
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          "traceId": "8049465c3a22d5c8"
+        }
+        "#;
+
+        let data: StreamData = sonic_rs::from_str(json).unwrap();
+        let cand = data.response.candidates.first().unwrap();
+        let part = cand.content.parts.first().unwrap();
+        let fc = part.function_call.as_ref().unwrap();
+        assert_eq!(fc.name, "ExitPlanMode");
+        assert_eq!(fc.id, "toolu_test");
+        assert!(fc.args.is_empty());
+    }
 }

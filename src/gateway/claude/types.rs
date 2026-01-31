@@ -115,4 +115,3 @@ pub struct Usage {
     pub input_tokens: i32,
     pub output_tokens: i32,
 }
-

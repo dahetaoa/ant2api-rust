@@ -99,7 +99,9 @@ impl Config {
                 .unwrap_or_else(|| vec![429, 500]),
             retry_max_attempts: raw.retry_max_attempts.unwrap_or(3),
             debug: raw.debug.unwrap_or_else(|| "off".to_string()),
-            endpoint_mode: raw.endpoint_mode.unwrap_or_else(|| "production".to_string()),
+            endpoint_mode: raw
+                .endpoint_mode
+                .unwrap_or_else(|| "production".to_string()),
             google_client_id: raw.google_client_id.unwrap_or_default(),
             google_client_secret: raw.google_client_secret.unwrap_or_default(),
             data_dir: raw.data_dir.unwrap_or_else(|| "./data".to_string()),

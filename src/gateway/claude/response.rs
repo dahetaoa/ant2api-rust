@@ -79,7 +79,9 @@ pub async fn to_messages_response(
             if reasoning.is_empty() {
                 reasoning = "[missing thought text]".to_string();
             }
-            sig_mgr.save(request_id, &tool_id, &sig, &reasoning, model).await;
+            sig_mgr
+                .save(request_id, &tool_id, &sig, &reasoning, model)
+                .await;
         }
 
         tool_uses.push(ResponseContentBlock {

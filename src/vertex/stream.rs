@@ -11,14 +11,16 @@ pub struct StreamParseError {
     pub source: anyhow::Error,
 }
 
-pub async fn parse_stream_with_result<F, Fut>(
+pub async fn parse_stream_with_result<F, Fut, L>(
     resp: reqwest::Response,
     mut receiver: F,
     build_merged: bool,
+    mut raw_logger: L,
 ) -> Result<StreamResult, StreamParseError>
 where
     F: FnMut(&StreamData) -> Fut,
     Fut: std::future::Future<Output = anyhow::Result<()>>,
+    L: FnMut(&[u8]),
 {
     let mut result = StreamResult::default();
     let mut text = String::new();
@@ -48,7 +50,10 @@ where
 
         while let Some(nl_rel) = buf[processed..].iter().position(|&b| b == b'\n') {
             let nl = processed + nl_rel;
-            let mut line = &buf[processed..nl];
+            let line_raw = &buf[processed..nl];
+            raw_logger(line_raw);
+
+            let mut line = line_raw;
             if line.ends_with(b"\r") {
                 line = &line[..line.len() - 1];
             }

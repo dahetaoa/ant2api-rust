@@ -141,7 +141,10 @@ impl Store {
             };
 
             let Some((idx, mut account)) = self.find_by_session_id(&session_id).await else {
-                tracing::warn!(session_id = session_id, "配额池命中但 Store 未找到账号，已清理");
+                tracing::warn!(
+                    session_id = session_id,
+                    "配额池命中但 Store 未找到账号，已清理"
+                );
                 pool_mgr.remove_session(&session_id).await;
                 continue;
             };

@@ -6,11 +6,11 @@
 //! - 最大并发: 4
 //! - 按 sessionId 去重 inflight 请求
 
+use sonic_rs::{JsonContainerTrait, JsonValueTrait};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, Semaphore};
-use sonic_rs::{JsonContainerTrait, JsonValueTrait};
 
 use crate::credential::types::Account;
 use crate::vertex::client::{Endpoint, VertexClient};
@@ -114,11 +114,11 @@ impl QuotaCache {
             if let Some(req) = inflight.get(session_id) {
                 let req = req.clone();
                 drop(inflight);
-                
+
                 // 等待 inflight 请求完成
                 let mut rx = req.done.subscribe();
                 let _ = rx.recv().await;
-                
+
                 let result = req.result.lock().await;
                 if let Some(ref res) = *result {
                     match res {
@@ -190,16 +190,12 @@ impl QuotaCache {
         vertex: &VertexClient,
     ) -> (Option<AccountQuota>, bool, Option<String>) {
         // 获取并发许可
-        let _permit = match tokio::time::timeout(
-            QUOTA_FETCH_TIMEOUT,
-            self.semaphore.acquire(),
-        )
-        .await
-        {
-            Ok(Ok(permit)) => permit,
-            Ok(Err(_)) => return (None, false, Some("内部错误".to_string())),
-            Err(_) => return (None, false, Some("请求超时，无法获取配额".to_string())),
-        };
+        let _permit =
+            match tokio::time::timeout(QUOTA_FETCH_TIMEOUT, self.semaphore.acquire()).await {
+                Ok(Ok(permit)) => permit,
+                Ok(Err(_)) => return (None, false, Some("内部错误".to_string())),
+                Err(_) => return (None, false, Some("请求超时，无法获取配额".to_string())),
+            };
 
         let project_id = account.project_id.trim();
         let project_id = if project_id.is_empty() {
@@ -271,7 +267,7 @@ pub(crate) fn group_quota_key(model_id: &str) -> &'static str {
 /// 将模型响应分组为配额组。
 pub(crate) fn group_quota_groups(models: &HashMap<String, sonic_rs::Value>) -> Vec<QuotaGroup> {
     use std::collections::BTreeMap;
-    
+
     let mut groups: BTreeMap<&str, QuotaGroup> = BTreeMap::new();
 
     for (model_id, model_data) in models {
@@ -288,7 +284,9 @@ pub(crate) fn group_quota_groups(models: &HashMap<String, sonic_rs::Value>) -> V
             model_list: Vec::new(),
         });
 
-        group.model_list.push(crate::util::model::canonical_model_id(model_id));
+        group
+            .model_list
+            .push(crate::util::model::canonical_model_id(model_id));
 
         let mq = parse_model_quota(model_data);
         if group.remaining_fraction.is_none() && mq.remaining_fraction.is_some() {
@@ -395,14 +393,12 @@ fn parse_model_quota_map(obj: &sonic_rs::Object) -> Option<ModelQuota> {
 
     // 兼容后端在配额完全耗尽时不返回 remainingFraction 的情况：
     // 仅返回 quotaInfo.resetTime，此时 remainingFraction 语义应视为 0。
-    let remaining_fraction = if remaining_fraction.is_none()
-        && !has_remaining_fraction
-        && reset_time.is_some()
-    {
-        Some(0.0)
-    } else {
-        remaining_fraction
-    };
+    let remaining_fraction =
+        if remaining_fraction.is_none() && !has_remaining_fraction && reset_time.is_some() {
+            Some(0.0)
+        } else {
+            remaining_fraction
+        };
 
     Some(ModelQuota {
         remaining_fraction,
@@ -441,7 +437,9 @@ pub fn quota_error_message(err: &crate::vertex::client::ApiError) -> String {
     use crate::vertex::client::ApiError;
 
     match err {
-        ApiError::Http { status, message, .. } => {
+        ApiError::Http {
+            status, message, ..
+        } => {
             if *status == 401 {
                 "Token 已失效或无权限，无法获取配额".to_string()
             } else if *status == 429 {

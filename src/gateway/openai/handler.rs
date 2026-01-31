@@ -32,8 +32,13 @@ pub async fn handle_list_models(
     headers: HeaderMap,
 ) -> Response {
     let start = Instant::now();
-    if state.cfg.client_log_enabled() {
-        logging::client_request(method.as_str(), uri.0.path(), &headers, &[]);
+    let log_level = state.cfg.log_level();
+    if log_level.client_enabled() {
+        if log_level.raw_enabled() {
+            logging::client_request_raw(method.as_str(), uri.0.path(), &headers, &[]);
+        } else {
+            logging::client_request(method.as_str(), uri.0.path(), &headers, &[]);
+        }
     }
 
     let endpoint = runtime_config::current_endpoint();
@@ -50,9 +55,18 @@ pub async fn handle_list_models(
             Ok(v) => v,
             Err(e) => {
                 let status = StatusCode::SERVICE_UNAVAILABLE;
-                if state.cfg.client_log_enabled() {
-                    let err = openai_error_value(&e.to_string());
-                    logging::client_response(status.as_u16(), start.elapsed(), Some(&err));
+                if log_level.client_enabled() {
+                    if log_level.raw_enabled() {
+                        let body = openai_error_body(&e.to_string());
+                        logging::client_response_raw(
+                            status.as_u16(),
+                            start.elapsed(),
+                            body.as_bytes(),
+                        );
+                    } else {
+                        let err = openai_error_value(&e.to_string());
+                        logging::client_response(status.as_u16(), start.elapsed(), Some(&err));
+                    }
                 }
                 return openai_error(status, &e.to_string());
             }
@@ -95,18 +109,27 @@ pub async fn handle_list_models(
             .as_ref()
             .map(|e| e.to_string())
             .unwrap_or_else(|| "后端请求失败".to_string());
-        if state.cfg.client_log_enabled() {
-            let err = openai_error_value(&msg);
-            logging::client_response(status.as_u16(), start.elapsed(), Some(&err));
+        if log_level.client_enabled() {
+            if log_level.raw_enabled() {
+                let body = openai_error_body(&msg);
+                logging::client_response_raw(status.as_u16(), start.elapsed(), body.as_bytes());
+            } else {
+                let err = openai_error_value(&msg);
+                logging::client_response(status.as_u16(), start.elapsed(), Some(&err));
+            }
         }
         return openai_error(status, &msg);
     };
 
     let out = to_models_response(&models);
-    if state.cfg.client_log_enabled()
-        && let Ok(v) = sonic_rs::to_value(&out)
-    {
-        logging::client_response(StatusCode::OK.as_u16(), start.elapsed(), Some(&v));
+    if log_level.client_enabled() {
+        if log_level.raw_enabled() {
+            if let Ok(bytes) = serde_json::to_vec(&out) {
+                logging::client_response_raw(StatusCode::OK.as_u16(), start.elapsed(), &bytes);
+            }
+        } else if let Ok(v) = sonic_rs::to_value(&out) {
+            logging::client_response(StatusCode::OK.as_u16(), start.elapsed(), Some(&v));
+        }
     }
     (StatusCode::OK, Json(out)).into_response()
 }
@@ -119,21 +142,36 @@ pub async fn handle_chat_completions(
     body: Bytes,
 ) -> Response {
     let start = Instant::now();
-    if state.cfg.client_log_enabled() {
-        logging::client_request(method.as_str(), uri.0.path(), &headers, body.as_ref());
+    let log_level = state.cfg.log_level();
+    if log_level.client_enabled() {
+        if log_level.raw_enabled() {
+            logging::client_request_raw(method.as_str(), uri.0.path(), &headers, body.as_ref());
+        } else {
+            logging::client_request(method.as_str(), uri.0.path(), &headers, body.as_ref());
+        }
     }
 
     let endpoint = runtime_config::current_endpoint();
     let mut req: ChatRequest = match sonic_rs::from_slice(body.as_ref()) {
         Ok(v) => v,
         Err(_) => {
-            if state.cfg.client_log_enabled() {
-                let err = openai_error_value("请求 JSON 解析失败，请检查请求体格式。");
-                logging::client_response(
-                    StatusCode::BAD_REQUEST.as_u16(),
-                    start.elapsed(),
-                    Some(&err),
-                );
+            if log_level.client_enabled() {
+                if log_level.raw_enabled() {
+                    let msg = "请求 JSON 解析失败，请检查请求体格式。";
+                    let body = openai_error_body(msg);
+                    logging::client_response_raw(
+                        StatusCode::BAD_REQUEST.as_u16(),
+                        start.elapsed(),
+                        body.as_bytes(),
+                    );
+                } else {
+                    let err = openai_error_value("请求 JSON 解析失败，请检查请求体格式。");
+                    logging::client_response(
+                        StatusCode::BAD_REQUEST.as_u16(),
+                        start.elapsed(),
+                        Some(&err),
+                    );
+                }
             }
             return openai_error(
                 StatusCode::BAD_REQUEST,
@@ -153,13 +191,22 @@ pub async fn handle_chat_completions(
         match to_vertex_request(&state.cfg, &state.sig_mgr, &mut req, &placeholder).await {
             Ok(v) => v,
             Err(e) => {
-                if state.cfg.client_log_enabled() {
-                    let err = openai_error_value(&e.to_string());
-                    logging::client_response(
-                        StatusCode::BAD_REQUEST.as_u16(),
-                        start.elapsed(),
-                        Some(&err),
-                    );
+                if log_level.client_enabled() {
+                    if log_level.raw_enabled() {
+                        let body = openai_error_body(&e.to_string());
+                        logging::client_response_raw(
+                            StatusCode::BAD_REQUEST.as_u16(),
+                            start.elapsed(),
+                            body.as_bytes(),
+                        );
+                    } else {
+                        let err = openai_error_value(&e.to_string());
+                        logging::client_response(
+                            StatusCode::BAD_REQUEST.as_u16(),
+                            start.elapsed(),
+                            Some(&err),
+                        );
+                    }
                 }
                 return openai_error(StatusCode::BAD_REQUEST, &e.to_string());
             }
@@ -190,13 +237,22 @@ pub async fn handle_chat_completions(
         {
             Ok(v) => v,
             Err(e) => {
-                if state.cfg.client_log_enabled() {
-                    let err = openai_error_value(&e.to_string());
-                    logging::client_response(
-                        StatusCode::SERVICE_UNAVAILABLE.as_u16(),
-                        start.elapsed(),
-                        Some(&err),
-                    );
+                if log_level.client_enabled() {
+                    if log_level.raw_enabled() {
+                        let body = openai_error_body(&e.to_string());
+                        logging::client_response_raw(
+                            StatusCode::SERVICE_UNAVAILABLE.as_u16(),
+                            start.elapsed(),
+                            body.as_bytes(),
+                        );
+                    } else {
+                        let err = openai_error_value(&e.to_string());
+                        logging::client_response(
+                            StatusCode::SERVICE_UNAVAILABLE.as_u16(),
+                            start.elapsed(),
+                            Some(&err),
+                        );
+                    }
                 }
                 return openai_error(StatusCode::SERVICE_UNAVAILABLE, &e.to_string());
             }
@@ -241,19 +297,28 @@ pub async fn handle_chat_completions(
             .as_ref()
             .map(|e| e.to_string())
             .unwrap_or_else(|| "后端请求失败".to_string());
-        if state.cfg.client_log_enabled() {
-            let err = openai_error_value(&msg);
-            logging::client_response(status.as_u16(), start.elapsed(), Some(&err));
+        if log_level.client_enabled() {
+            if log_level.raw_enabled() {
+                let body = openai_error_body(&msg);
+                logging::client_response_raw(status.as_u16(), start.elapsed(), body.as_bytes());
+            } else {
+                let err = openai_error_value(&msg);
+                logging::client_response(status.as_u16(), start.elapsed(), Some(&err));
+            }
         }
         return openai_error(status, &msg);
     };
 
     let out = to_chat_completion(&vresp, &model, &request_id, &state.sig_mgr).await;
 
-    if state.cfg.client_log_enabled()
-        && let Ok(v) = sonic_rs::to_value(&out)
-    {
-        logging::client_response(StatusCode::OK.as_u16(), start.elapsed(), Some(&v));
+    if log_level.client_enabled() {
+        if log_level.raw_enabled() {
+            if let Ok(bytes) = serde_json::to_vec(&out) {
+                logging::client_response_raw(StatusCode::OK.as_u16(), start.elapsed(), &bytes);
+            }
+        } else if let Ok(v) = sonic_rs::to_value(&out) {
+            logging::client_response(StatusCode::OK.as_u16(), start.elapsed(), Some(&v));
+        }
     }
     (StatusCode::OK, Json(out)).into_response()
 }
@@ -270,8 +335,14 @@ async fn handle_stream_with_retry(
     let endpoint = runtime_config::current_endpoint();
 
     tokio::spawn(async move {
-        let client_log = state.cfg.client_log_enabled();
-        let backend_log = state.cfg.backend_log_enabled();
+        let log_level = state.cfg.log_level();
+        let client_log = log_level.client_enabled();
+        let backend_log = log_level.backend_enabled();
+        let raw_log = log_level.raw_enabled();
+
+        // RAW 模式下用于在“后端响应/客户端响应”之间切换时打印分割线。
+        // 0 = none, 1 = backend, 2 = client
+        let raw_section = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0));
 
         let mut last_err: Option<ApiError> = None;
         let mut resp = None;
@@ -285,7 +356,7 @@ async fn handle_stream_with_retry(
             {
                 Ok(v) => v,
                 Err(e) => {
-                    if client_log {
+                    if client_log && !raw_log {
                         let err = openai_error_value(&e.to_string());
                         logging::client_stream_response(
                             StatusCode::OK.as_u16(),
@@ -293,7 +364,13 @@ async fn handle_stream_with_retry(
                             &[err],
                         );
                     }
-                    send_sse_error(&tx, &e.to_string()).await;
+                    send_sse_error(
+                        &tx,
+                        &e.to_string(),
+                        client_log && raw_log,
+                        raw_section.clone(),
+                    )
+                    .await;
                     return;
                 }
             };
@@ -331,7 +408,7 @@ async fn handle_stream_with_retry(
                 .as_ref()
                 .map(|e| e.to_string())
                 .unwrap_or_else(|| "后端请求失败".to_string());
-            if client_log {
+            if client_log && !raw_log {
                 let err = openai_error_value(&msg);
                 logging::client_stream_response(
                     StatusCode::OK.as_u16(),
@@ -339,7 +416,7 @@ async fn handle_stream_with_retry(
                     &[err],
                 );
             }
-            send_sse_error(&tx, &msg).await;
+            send_sse_error(&tx, &msg, client_log && raw_log, raw_section.clone()).await;
             return;
         };
 
@@ -348,10 +425,11 @@ async fn handle_stream_with_retry(
             now_unix(),
             model.clone(),
             request_id.clone(),
-            client_log,
+            client_log && !raw_log,
         );
 
-        let build_merged = backend_log;
+        let backend_raw = backend_log && raw_log;
+        let build_merged = backend_log && !raw_log;
         let parse_res = crate::vertex::stream::parse_stream_with_result(
             resp,
             |data| {
@@ -371,6 +449,7 @@ async fn handle_stream_with_retry(
 
                 let tx = tx.clone();
                 let sig_mgr = state.sig_mgr.clone();
+                let raw_section = raw_section.clone();
                 async move {
                     for s in saves {
                         sig_mgr
@@ -384,6 +463,12 @@ async fn handle_stream_with_retry(
                             .await;
                     }
                     for ev in events {
+                        if client_log && raw_log {
+                            if raw_section.swap(2, std::sync::atomic::Ordering::Relaxed) != 2 {
+                                logging::client_response_divider_raw();
+                            }
+                            logging::client_stream_event_raw(None, &ev);
+                        }
                         if tx.send(Ok(Event::default().data(ev))).await.is_err() {
                             break;
                         }
@@ -392,6 +477,20 @@ async fn handle_stream_with_retry(
                 }
             },
             build_merged,
+            {
+                let raw_section = raw_section.clone();
+                move |line| {
+                    if !backend_raw {
+                        return;
+                    }
+                    if raw_section.swap(1, std::sync::atomic::Ordering::Relaxed) != 1 {
+                        logging::backend_response_divider_raw();
+                    }
+                    if line.starts_with(b"data:") || line.starts_with(b":") {
+                        logging::backend_stream_line_raw(line);
+                    }
+                }
+            },
         )
         .await;
 
@@ -413,43 +512,66 @@ async fn handle_stream_with_retry(
             if client_disconnected {
                 continue;
             }
+            if client_log && raw_log {
+                if raw_section.swap(2, std::sync::atomic::Ordering::Relaxed) != 2 {
+                    logging::client_response_divider_raw();
+                }
+                logging::client_stream_event_raw(None, &ev);
+            }
             if tx.send(Ok(Event::default().data(ev))).await.is_err() {
                 client_disconnected = true;
             }
         }
 
         let duration = started_at.elapsed();
-        if backend_log {
-            logging::backend_stream_response(
-                StatusCode::OK.as_u16(),
-                duration,
-                stream_result.merged_response.as_ref(),
-            );
-        }
-        if client_log {
-            let merged = writer.take_merged_events_for_log();
-            logging::client_stream_response(StatusCode::OK.as_u16(), duration, &merged);
+        if !raw_log {
+            if backend_log {
+                logging::backend_stream_response(
+                    StatusCode::OK.as_u16(),
+                    duration,
+                    stream_result.merged_response.as_ref(),
+                );
+            }
+            if client_log {
+                let merged = writer.take_merged_events_for_log();
+                logging::client_stream_response(StatusCode::OK.as_u16(), duration, &merged);
+            }
         }
     });
 
     Sse::new(ReceiverStream::new(rx)).into_response()
 }
 
-async fn send_sse_error(tx: &mpsc::Sender<Result<Event, Infallible>>, msg: &str) {
+async fn send_sse_error(
+    tx: &mpsc::Sender<Result<Event, Infallible>>,
+    msg: &str,
+    raw_log: bool,
+    raw_section: std::sync::Arc<std::sync::atomic::AtomicU8>,
+) {
     for ev in sse_error_events(msg) {
+        if raw_log {
+            if raw_section.swap(2, std::sync::atomic::Ordering::Relaxed) != 2 {
+                logging::client_response_divider_raw();
+            }
+            logging::client_stream_event_raw(None, &ev);
+        }
         let _ = tx.send(Ok(Event::default().data(ev))).await;
     }
 }
 
 fn openai_error(status: StatusCode, msg: &str) -> Response {
-    let encoded = sonic_rs::to_string(msg).unwrap_or_else(|_| "\"\"".to_string());
-    let body = format!("{{\"error\":{{\"message\":{encoded},\"type\":\"server_error\"}}}}");
+    let body = openai_error_body(msg);
     (
         status,
         [(axum::http::header::CONTENT_TYPE, "application/json")],
         body,
     )
         .into_response()
+}
+
+fn openai_error_body(msg: &str) -> String {
+    let encoded = sonic_rs::to_string(msg).unwrap_or_else(|_| "\"\"".to_string());
+    format!("{{\"error\":{{\"message\":{encoded},\"type\":\"server_error\"}}}}")
 }
 
 fn openai_error_value(msg: &str) -> sonic_rs::Value {

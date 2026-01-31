@@ -1,6 +1,6 @@
 use crate::config::Config;
 use crate::gateway::common::extract::{extract_claude_system_text, extract_text_from_content};
-use crate::gateway::common::{find_function_name, AccountContext};
+use crate::gateway::common::{AccountContext, find_function_name};
 use crate::signature::manager::Manager as SignatureManager;
 use crate::util::{id, model as modelutil};
 use crate::vertex::sanitize::{
@@ -302,7 +302,10 @@ async fn extract_content_parts(
                             }
                         } else if signature.len() <= 50 {
                             if let Some(e) = sig_mgr
-                                .lookup_by_tool_call_id_and_signature_prefix(&tool_use_id, &signature)
+                                .lookup_by_tool_call_id_and_signature_prefix(
+                                    &tool_use_id,
+                                    &signature,
+                                )
                                 .await
                             {
                                 signature = e.signature.trim().to_string();
@@ -433,7 +436,9 @@ async fn extract_content_parts(
                     continue;
                 }
 
-                let func_name = find_function_name(contents_so_far, tool_use_id).trim().to_string();
+                let func_name = find_function_name(contents_so_far, tool_use_id)
+                    .trim()
+                    .to_string();
                 if func_name.is_empty() {
                     continue;
                 }

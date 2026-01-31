@@ -233,7 +233,10 @@ impl ClaudeStreamWriter {
                 Data {
                     typ: "content_block_start",
                     index: idx,
-                    content_block: TextBlock { typ: "text", text: "" },
+                    content_block: TextBlock {
+                        typ: "text",
+                        text: "",
+                    },
                 }
                 .to_value()
             }
@@ -292,10 +295,7 @@ impl ClaudeStreamWriter {
     }
 
     fn emit_thinking_delta(&mut self, text: &str) -> (&'static str, String) {
-        let idx = self
-            .current_block
-            .map(|(i, _)| i)
-            .unwrap_or_else(|| 0);
+        let idx = self.current_block.map(|(i, _)| i).unwrap_or_else(|| 0);
 
         #[derive(Serialize)]
         struct Delta<'a> {
@@ -327,10 +327,7 @@ impl ClaudeStreamWriter {
     }
 
     fn emit_text_delta(&mut self, text: &str) -> (&'static str, String) {
-        let idx = self
-            .current_block
-            .map(|(i, _)| i)
-            .unwrap_or_else(|| 0);
+        let idx = self.current_block.map(|(i, _)| i).unwrap_or_else(|| 0);
 
         #[derive(Serialize)]
         struct Delta<'a> {
@@ -551,7 +548,11 @@ impl ClaudeStreamWriter {
         (events, save)
     }
 
-    fn emit_message_delta(&mut self, output_tokens: i32, stop_reason: &str) -> (&'static str, String) {
+    fn emit_message_delta(
+        &mut self,
+        output_tokens: i32,
+        stop_reason: &str,
+    ) -> (&'static str, String) {
         let mut usage = sonic_rs::Object::new();
         usage.insert("output_tokens", output_tokens.max(0));
 
@@ -671,10 +672,7 @@ mod tests {
         use std::collections::HashMap;
 
         let mut args = HashMap::new();
-        args.insert(
-            "command".to_string(),
-            sonic_rs::to_value("ls -la").unwrap(),
-        );
+        args.insert("command".to_string(), sonic_rs::to_value("ls -la").unwrap());
         args.insert(
             "description".to_string(),
             sonic_rs::to_value("列出当前目录下的所有文件").unwrap(),
@@ -692,10 +690,8 @@ mod tests {
             thought_signature: String::new(),
         };
 
-        let mut writer = ClaudeStreamWriter::new(
-            "req_test".to_string(),
-            "claude-3-opus-20240229".to_string(),
-        );
+        let mut writer =
+            ClaudeStreamWriter::new("req_test".to_string(), "claude-3-opus-20240229".to_string());
         let (events, _saves) = writer.process_part(&part);
 
         assert_eq!(events.len(), 4);
@@ -710,7 +706,10 @@ mod tests {
         assert_eq!(start["content_block"]["name"], "Bash");
         assert_eq!(start["content_block"]["id"], "toolu_test");
         assert!(start["content_block"]["input"].is_object());
-        assert_eq!(start["content_block"]["input"].as_object().unwrap().len(), 0);
+        assert_eq!(
+            start["content_block"]["input"].as_object().unwrap().len(),
+            0
+        );
 
         let delta = serde_json::from_str::<serde_json::Value>(&events[2].1).unwrap();
         assert_eq!(delta["type"], "content_block_delta");
@@ -719,7 +718,6 @@ mod tests {
         assert!(partial.contains("ls -la"));
         assert!(partial.contains("列出当前目录下的所有文件"));
     }
-
 }
 
 trait ToValue {

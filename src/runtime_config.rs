@@ -68,15 +68,17 @@ pub fn get() -> Arc<RuntimeSettings> {
     RUNTIME_SETTINGS
         .get()
         .map(|s| s.load_full())
-        .unwrap_or_else(|| Arc::new(RuntimeSettings {
-            webui_password: String::new(),
-            api_user_agent: String::from("ant2api/1.0"),
-            gemini3_media_resolution: String::new(),
-            debug: String::from("off"),
-            api_key: String::new(),
-            endpoint_mode: ENDPOINT_MODE_PRODUCTION.to_string(),
-            port: 8045,
-        }))
+        .unwrap_or_else(|| {
+            Arc::new(RuntimeSettings {
+                webui_password: String::new(),
+                api_user_agent: String::from("ant2api/1.0"),
+                gemini3_media_resolution: String::new(),
+                debug: String::from("off"),
+                api_key: String::new(),
+                endpoint_mode: ENDPOINT_MODE_PRODUCTION.to_string(),
+                port: 8045,
+            })
+        })
 }
 
 /// 更新运行时配置（从 WebUI 设置页面调用）。
@@ -118,8 +120,13 @@ impl WebUISettings {
             return Err("WebUI 登录密码不能为空");
         }
         let debug = self.debug.trim().to_lowercase();
-        if !debug.is_empty() && debug != "off" && debug != "low" && debug != "high" {
-            return Err("日志级别必须是 off、low 或 high");
+        if !debug.is_empty()
+            && debug != "off"
+            && debug != "low"
+            && debug != "medium"
+            && debug != "high"
+        {
+            return Err("日志级别必须是 off、low、medium 或 high");
         }
         let endpoint_mode = self.normalized_endpoint_mode();
         if endpoint_mode != ENDPOINT_MODE_PRODUCTION && endpoint_mode != ENDPOINT_MODE_DAILY {
@@ -135,6 +142,8 @@ impl WebUISettings {
             "off".to_string()
         } else if d == "low" {
             "low".to_string()
+        } else if d == "medium" {
+            "medium".to_string()
         } else if d == "high" {
             "high".to_string()
         } else {
@@ -209,15 +218,17 @@ pub fn persist_to_dotenv(settings: &WebUISettings) -> Result<(), String> {
         ("WEBUI_PASSWORD", settings.webui_password.trim()),
         ("DEBUG", &settings.normalized_debug()),
         ("API_USER_AGENT", settings.user_agent.trim()),
-        ("GEMINI3_MEDIA_RESOLUTION", &normalize_media_resolution(&settings.gemini3_media_resolution)),
+        (
+            "GEMINI3_MEDIA_RESOLUTION",
+            &normalize_media_resolution(&settings.gemini3_media_resolution),
+        ),
         ("ENDPOINT_MODE", &settings.normalized_endpoint_mode()),
     ];
 
-    let dotenv_path = find_or_create_dotenv_path()
-        .map_err(|e| format!("无法获取 .env 路径: {e}"))?;
+    let dotenv_path =
+        find_or_create_dotenv_path().map_err(|e| format!("无法获取 .env 路径: {e}"))?;
 
-    update_dotenv_file(&dotenv_path, &updates)
-        .map_err(|e| format!("无法更新 .env 文件: {e}"))?;
+    update_dotenv_file(&dotenv_path, &updates).map_err(|e| format!("无法更新 .env 文件: {e}"))?;
 
     Ok(())
 }
@@ -316,7 +327,12 @@ fn parse_dotenv_line(line: &str) -> Option<(String, String)> {
 
 /// 格式化 .env 行，必要时添加引号。
 fn format_env_line(key: &str, value: &str) -> String {
-    if value.is_empty() || value.contains(' ') || value.contains('\t') || value.contains('"') || value.contains('\'') {
+    if value.is_empty()
+        || value.contains(' ')
+        || value.contains('\t')
+        || value.contains('"')
+        || value.contains('\'')
+    {
         format!("{}=\"{}\"", key, value)
     } else {
         format!("{}={}", key, value)
@@ -326,6 +342,36 @@ fn format_env_line(key: &str, value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_debug_level_validation_and_normalization() {
+        let base = WebUISettings {
+            api_key: String::new(),
+            webui_password: "pw".to_string(),
+            debug: "off".to_string(),
+            user_agent: String::new(),
+            gemini3_media_resolution: String::new(),
+            endpoint_mode: ENDPOINT_MODE_PRODUCTION.to_string(),
+        };
+
+        for level in ["off", "low", "medium", "high", "  HIGH  ", ""] {
+            let mut s = base.clone();
+            s.debug = level.to_string();
+            assert!(s.validate().is_ok());
+        }
+
+        let mut s = base.clone();
+        s.debug = "invalid".to_string();
+        assert!(s.validate().is_err());
+
+        let mut s = base.clone();
+        s.debug = "HIGH".to_string();
+        assert_eq!(s.normalized_debug(), "high");
+
+        let mut s = base;
+        s.debug = "medium".to_string();
+        assert_eq!(s.normalized_debug(), "medium");
+    }
 
     #[test]
     fn test_normalize_media_resolution() {
@@ -340,7 +386,10 @@ mod tests {
     fn test_normalize_endpoint_mode() {
         assert_eq!(normalize_endpoint_mode("daily"), ENDPOINT_MODE_DAILY);
         assert_eq!(normalize_endpoint_mode("DAILY"), ENDPOINT_MODE_DAILY);
-        assert_eq!(normalize_endpoint_mode("production"), ENDPOINT_MODE_PRODUCTION);
+        assert_eq!(
+            normalize_endpoint_mode("production"),
+            ENDPOINT_MODE_PRODUCTION
+        );
         assert_eq!(normalize_endpoint_mode(""), ENDPOINT_MODE_PRODUCTION);
         assert_eq!(normalize_endpoint_mode("invalid"), ENDPOINT_MODE_PRODUCTION);
     }

@@ -129,4 +129,3 @@ where
         _ => active.keys().find(|sid| filter(sid)).cloned(),
     }
 }
-

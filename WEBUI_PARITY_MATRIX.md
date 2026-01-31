@@ -35,7 +35,7 @@
 | `/manager/api/oauth/url` | GET | 生成OAuth授权URL | JSON: `{url: "..."}` / `{error: "..."}` | - | 200/500 | "生成 OAuth state 失败" |
 | `/manager/api/oauth/parse-url` | POST | 解析回调URL并添加账号 | JSON: `{success: true}` / `{error: "..."}` | - | 200/400/500 | 见OAuth错误消息部分 |
 | `/manager/api/settings` | GET/HEAD | 获取设置 | HTMX:HTML片段 / 否则:JSON | - | 200 | - |
-| `/manager/api/settings` | POST | 保存设置 | JSON: `{success: true}` / `{error: "..."}` | - | 200/400/500 | "WebUI 登录密码不能为空" / "日志级别必须是 off、low 或 high" |
+| `/manager/api/settings` | POST | 保存设置 | JSON: `{success: true}` / `{error: "..."}` | - | 200/400/500 | "WebUI 登录密码不能为空" / "日志级别必须是 off、low、medium 或 high" |
 
 ## 二、认证机制
 
@@ -133,7 +133,7 @@ Go 的 url.Parse 接受以下格式：
 {
   "apiKey": string,
   "webuiPassword": string,
-  "debug": "off"|"low"|"high",
+  "debug": "off"|"low"|"medium"|"high",
   "userAgent": string,
   "gemini3MediaResolution": ""|"low"|"medium"|"high"
 }
@@ -234,4 +234,3 @@ Go 的 url.Parse 接受以下格式：
 | POST /manager/api/oauth/parse-url | ✅ |
 | GET /manager/api/settings | ✅ |
 | POST /manager/api/settings | ✅ |
-

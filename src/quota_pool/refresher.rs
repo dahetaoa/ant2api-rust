@@ -3,8 +3,8 @@
 use crate::credential::store::Store;
 use crate::gateway::manager::quota::group_quota_groups;
 use crate::quota_pool::QuotaPoolManager;
-use crate::vertex::client::VertexClient;
 use crate::runtime_config;
+use crate::vertex::client::VertexClient;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;

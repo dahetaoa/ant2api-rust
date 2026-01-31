@@ -23,7 +23,10 @@ pub fn format_reset_time(rt: &Option<String>) -> String {
         return "未知".to_string();
     }
     match DateTime::parse_from_rfc3339(rt) {
-        Ok(dt) => dt.with_timezone(&china_tz()).format("%m/%d %H:%M").to_string(),
+        Ok(dt) => dt
+            .with_timezone(&china_tz())
+            .format("%m/%d %H:%M")
+            .to_string(),
         Err(_) => rt.clone(),
     }
 }
@@ -49,7 +52,9 @@ pub fn bar_class(frac: &Option<f64>) -> &'static str {
         Some(v) if *v < 0.5 => {
             "bg-yellow-400 h-full rounded-full transition-all duration-700 ease-out quota-bar-pop"
         }
-        _ => "bg-emerald-500 h-full rounded-full transition-all duration-700 ease-out quota-bar-pop",
+        _ => {
+            "bg-emerald-500 h-full rounded-full transition-all duration-700 ease-out quota-bar-pop"
+        }
     }
 }
 
@@ -152,7 +157,7 @@ impl ViewAccount {
     pub fn from_account(acc: &Account) -> Self {
         let now = chrono::Utc::now().timestamp_millis();
         let is_expired = acc.is_expired(now);
-        
+
         let status = if !acc.enable {
             AccountStatus::Disabled
         } else if is_expired {

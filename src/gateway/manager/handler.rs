@@ -3,10 +3,10 @@
 //! 实现与 Go 版本完全一致的 WebUI 功能。
 
 use axum::{
-    extract::{Query, State},
-    http::{header, HeaderMap, StatusCode},
-    response::{Html, IntoResponse, Redirect, Response},
     Form, Json,
+    extract::{Query, State},
+    http::{HeaderMap, StatusCode, header},
+    response::{Html, IntoResponse, Redirect, Response},
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -49,7 +49,10 @@ fn is_authenticated(headers: &HeaderMap) -> bool {
             cookies.split(';').any(|c| {
                 let c = c.trim();
                 c == format!("{}={}", SESSION_COOKIE_NAME, SESSION_COOKIE_VALUE)
-                    || c.starts_with(&format!("{}={};", SESSION_COOKIE_NAME, SESSION_COOKIE_VALUE))
+                    || c.starts_with(&format!(
+                        "{}={};",
+                        SESSION_COOKIE_NAME, SESSION_COOKIE_VALUE
+                    ))
             })
         })
         .unwrap_or(false)
@@ -67,10 +70,7 @@ fn set_auth_cookie() -> String {
 
 /// 清除认证 Cookie
 fn clear_auth_cookie() -> String {
-    format!(
-        "{}=; Path=/; HttpOnly; Max-Age=0",
-        SESSION_COOKIE_NAME
-    )
+    format!("{}=; Path=/; HttpOnly; Max-Age=0", SESSION_COOKIE_NAME)
 }
 
 // ============================================================================
@@ -82,7 +82,7 @@ pub async fn handle_login_view(headers: HeaderMap) -> Response {
     if is_authenticated(&headers) {
         return Redirect::to("/").into_response();
     }
-    
+
     let tmpl = templates::LoginTemplate {
         error_msg: String::new(),
     };
@@ -98,7 +98,7 @@ pub struct LoginForm {
 /// POST /login - 处理登录
 pub async fn handle_login(Form(form): Form<LoginForm>) -> Response {
     let settings = runtime_config::get();
-    
+
     // 检查密码是否配置
     if settings.webui_password.is_empty() {
         let tmpl = templates::LoginTemplate {
@@ -106,19 +106,13 @@ pub async fn handle_login(Form(form): Form<LoginForm>) -> Response {
         };
         return Html(tmpl.render().unwrap_or_default()).into_response();
     }
-    
+
     // 验证密码
     if form.password == settings.webui_password {
         let mut headers = HeaderMap::new();
-        headers.insert(
-            header::SET_COOKIE,
-            set_auth_cookie().parse().unwrap(),
-        );
-        headers.insert(
-            "HX-Redirect",
-            "/".parse().unwrap(),
-        );
-        
+        headers.insert(header::SET_COOKIE, set_auth_cookie().parse().unwrap());
+        headers.insert("HX-Redirect", "/".parse().unwrap());
+
         (headers, "登录成功").into_response()
     } else {
         let tmpl = templates::LoginTemplate {
@@ -131,11 +125,8 @@ pub async fn handle_login(Form(form): Form<LoginForm>) -> Response {
 /// GET /logout - 登出
 pub async fn handle_logout() -> Response {
     let mut headers = HeaderMap::new();
-    headers.insert(
-        header::SET_COOKIE,
-        clear_auth_cookie().parse().unwrap(),
-    );
-    
+    headers.insert(header::SET_COOKIE, clear_auth_cookie().parse().unwrap());
+
     (headers, Redirect::to("/login")).into_response()
 }
 
@@ -144,29 +135,25 @@ pub async fn handle_logout() -> Response {
 // ============================================================================
 
 /// GET / - Dashboard 主页面
-pub async fn handle_dashboard(
-    State(state): State<Arc<ManagerState>>,
-) -> Response {
+pub async fn handle_dashboard(State(state): State<Arc<ManagerState>>) -> Response {
     let mut accounts = state.store.get_all().await;
     sort_accounts_by_created_at_desc(&mut accounts);
     let stats = templates::calculate_stats(&accounts);
     let view_accounts = to_view_accounts(&accounts);
-    
+
     let tmpl = templates::DashboardTemplate {
         accounts: view_accounts,
         stats,
     };
-    
+
     Html(tmpl.render().unwrap_or_default()).into_response()
 }
 
 /// GET /manager/api/stats - 统计卡片片段
-pub async fn handle_stats(
-    State(state): State<Arc<ManagerState>>,
-) -> Response {
+pub async fn handle_stats(State(state): State<Arc<ManagerState>>) -> Response {
     let accounts = state.store.get_all().await;
     let stats = templates::calculate_stats(&accounts);
-    
+
     let tmpl = templates::StatsCardsTemplate { stats };
     Html(tmpl.render().unwrap_or_default()).into_response()
 }
@@ -185,7 +172,7 @@ pub async fn handle_list(
 ) -> Response {
     let accounts = state.store.get_all().await;
     let now = chrono::Utc::now().timestamp_millis();
-    
+
     let filtered: Vec<Account> = accounts
         .into_iter()
         .filter(|acc| {
@@ -193,7 +180,7 @@ pub async fn handle_list(
             if status.is_empty() || status == "all" {
                 return true;
             }
-            
+
             let is_expired = acc.is_expired(now);
             match status {
                 "active" => acc.enable && !is_expired,
@@ -203,17 +190,19 @@ pub async fn handle_list(
             }
         })
         .collect();
-    
+
     let mut sorted = filtered;
     sort_accounts_by_created_at_desc(&mut sorted);
     let view_accounts = to_view_accounts(&sorted);
-    
-    let tmpl = templates::TokenListTemplate { accounts: view_accounts };
+
+    let tmpl = templates::TokenListTemplate {
+        accounts: view_accounts,
+    };
     let html = tmpl.render().unwrap_or_default();
-    
+
     let mut headers = HeaderMap::new();
     headers.insert("HX-Trigger", "refreshQuota".parse().unwrap());
-    
+
     (headers, Html(html)).into_response()
 }
 
@@ -238,7 +227,7 @@ pub async fn handle_delete(
     Query(query): Query<IdQuery>,
 ) -> Response {
     let idx = find_index_by_session_id(&state.store, &query.id).await;
-    
+
     if let Some(idx) = idx {
         if state.store.delete(idx).await.is_ok() {
             state.quota_pool.remove_session(&query.id).await;
@@ -246,7 +235,7 @@ pub async fn handle_delete(
             return "".into_response();
         }
     }
-    
+
     (StatusCode::NOT_FOUND, "未找到").into_response()
 }
 
@@ -256,7 +245,7 @@ pub async fn handle_toggle(
     Query(query): Query<IdQuery>,
 ) -> Response {
     let idx = find_index_by_session_id(&state.store, &query.id).await;
-    
+
     if let Some(idx) = idx {
         let accounts = state.store.get_all().await;
         if idx < accounts.len() {
@@ -266,7 +255,7 @@ pub async fn handle_toggle(
                 // 账号禁用后立即从配额池移除，避免仍被网关选择。
                 state.quota_pool.remove_session(&query.id).await;
             }
-            
+
             // 重新获取更新后的账号
             let accounts = state.store.get_all().await;
             if idx < accounts.len() {
@@ -276,15 +265,15 @@ pub async fn handle_toggle(
                     quota_open: false,
                 };
                 let html = tmpl.render().unwrap_or_default();
-                
+
                 let mut headers = HeaderMap::new();
                 headers.insert("HX-Trigger", "refreshQuota".parse().unwrap());
-                
+
                 return (headers, Html(html)).into_response();
             }
         }
     }
-    
+
     "".into_response()
 }
 
@@ -303,7 +292,7 @@ pub async fn handle_refresh(
 ) -> Response {
     let quota_open = form.quota_open.trim() == "1";
     let idx = find_index_by_session_id(&state.store, &query.id).await;
-    
+
     if let Some(idx) = idx {
         // 刷新账号
         let mut toast_type = "success";
@@ -313,10 +302,10 @@ pub async fn handle_refresh(
             toast_type = "error";
             toast_msg = "凭证刷新失败";
         }
-        
+
         // 使配额缓存失效
         state.quota_cache.invalidate(&query.id).await;
-        
+
         // 返回更新后的卡片
         let accounts = state.store.get_all().await;
         if idx < accounts.len() {
@@ -326,7 +315,7 @@ pub async fn handle_refresh(
                 quota_open,
             };
             let html = tmpl.render().unwrap_or_default();
-            
+
             let mut headers = HeaderMap::new();
             let trigger = serde_json::json!({
                 "refreshQuota": true,
@@ -334,20 +323,18 @@ pub async fn handle_refresh(
             })
             .to_string();
             headers.insert("HX-Trigger", trigger.parse().unwrap());
-            
+
             return (headers, Html(html)).into_response();
         }
     }
-    
+
     "".into_response()
 }
 
 /// POST /manager/api/refresh_all - 刷新所有账号
-pub async fn handle_refresh_all(
-    State(state): State<Arc<ManagerState>>,
-) -> Response {
+pub async fn handle_refresh_all(State(state): State<Arc<ManagerState>>) -> Response {
     let _ = state.store.refresh_all().await;
-    
+
     let mut headers = HeaderMap::new();
     let trigger = serde_json::json!({
         "refreshStats": true,
@@ -357,7 +344,7 @@ pub async fn handle_refresh_all(
     })
     .to_string();
     headers.insert("HX-Trigger", trigger.parse().unwrap());
-    
+
     (headers, "").into_response()
 }
 
@@ -411,16 +398,16 @@ pub async fn handle_quota(
 ) -> Response {
     let session_id = query.id.trim();
     let force = query.force.trim() == "1";
-    
+
     if session_id.is_empty() {
         return render_quota_error(&headers, "", "缺少 id 参数");
     }
-    
+
     let idx = find_index_by_session_id(&state.store, session_id).await;
     let Some(idx) = idx else {
         return render_quota_error(&headers, session_id, "未找到对应账号");
     };
-    
+
     let accounts = state.store.get_all().await;
     if idx >= accounts.len() {
         return render_quota_error(&headers, session_id, "未找到对应账号");
@@ -431,36 +418,39 @@ pub async fn handle_quota(
         .quota_cache
         .get_quota(&accounts[idx], &endpoint, &state.vertex, force)
         .await;
-    
+
     if let Some(err_msg) = error {
         return render_quota_error(&headers, session_id, &err_msg);
     }
-    
+
     let quota = quota.unwrap_or(AccountQuota {
         session_id: session_id.to_string(),
         groups: Vec::new(),
         fetched_at: chrono::Utc::now(),
     });
-    
+
     if is_htmx(&headers) {
         let groups: Vec<ViewQuotaGroup> = quota
             .groups
             .iter()
             .map(ViewQuotaGroup::from_quota_group)
             .collect();
-        
+
         let tmpl = templates::QuotaContentTemplate {
             session_id: session_id.to_string(),
             groups,
             error_msg: String::new(),
         };
-        
+
         let mut resp_headers = HeaderMap::new();
-        resp_headers.insert(header::CONTENT_TYPE, "text/html; charset=utf-8".parse().unwrap());
-        
+        resp_headers.insert(
+            header::CONTENT_TYPE,
+            "text/html; charset=utf-8".parse().unwrap(),
+        );
+
         return (resp_headers, Html(tmpl.render().unwrap_or_default())).into_response();
     }
-    
+
     Json(QuotaApiResponse {
         session_id: session_id.to_string(),
         groups: quota.groups,
@@ -479,10 +469,13 @@ fn render_quota_error(headers: &HeaderMap, session_id: &str, msg: &str) -> Respo
             groups: Vec::new(),
             error_msg: msg.to_string(),
         };
-        
+
         let mut resp_headers = HeaderMap::new();
-        resp_headers.insert(header::CONTENT_TYPE, "text/html; charset=utf-8".parse().unwrap());
-        
+        resp_headers.insert(
+            header::CONTENT_TYPE,
+            "text/html; charset=utf-8".parse().unwrap(),
+        );
+
         (resp_headers, Html(tmpl.render().unwrap_or_default())).into_response()
     } else {
         Json(QuotaApiResponse {
@@ -511,7 +504,7 @@ pub async fn handle_quota_all(
 ) -> Response {
     let force = query.force.trim() == "1";
     let accounts = state.store.get_all().await;
-    
+
     if accounts.is_empty() {
         if is_htmx(&headers) {
             return Html("").into_response();
@@ -522,30 +515,34 @@ pub async fn handle_quota_all(
     let endpoint = runtime_config::current_endpoint();
     // 并发获取所有配额
     let mut handles = Vec::with_capacity(accounts.len());
-    
+
     for acc in accounts.iter() {
         let acc = acc.clone();
         let endpoint = endpoint.clone();
         let vertex = state.vertex.clone();
         let quota_cache = &state.quota_cache;
-        
+
         handles.push(async move {
-            let (quota, cached, error) = quota_cache
-                .get_quota(&acc, &endpoint, &vertex, force)
-                .await;
+            let (quota, cached, error) =
+                quota_cache.get_quota(&acc, &endpoint, &vertex, force).await;
             (acc.session_id.clone(), quota, cached, error)
         });
     }
-    
+
     let results: Vec<_> = futures::future::join_all(handles).await;
-    
+
     if is_htmx(&headers) {
         let mut html = String::new();
         for (session_id, quota, _cached, error) in results {
             let groups: Vec<ViewQuotaGroup> = quota
-                .map(|q| q.groups.iter().map(ViewQuotaGroup::from_quota_group).collect())
+                .map(|q| {
+                    q.groups
+                        .iter()
+                        .map(ViewQuotaGroup::from_quota_group)
+                        .collect()
+                })
                 .unwrap_or_default();
-            
+
             let tmpl = templates::QuotaSwapOOBTemplate {
                 session_id: session_id.clone(),
                 groups,
@@ -553,13 +550,16 @@ pub async fn handle_quota_all(
             };
             html.push_str(&tmpl.render().unwrap_or_default());
         }
-        
+
         let mut resp_headers = HeaderMap::new();
-        resp_headers.insert(header::CONTENT_TYPE, "text/html; charset=utf-8".parse().unwrap());
-        
+        resp_headers.insert(
+            header::CONTENT_TYPE,
+            "text/html; charset=utf-8".parse().unwrap(),
+        );
+
         return (resp_headers, Html(html)).into_response();
     }
-    
+
     let out: Vec<QuotaApiResponse> = results
         .into_iter()
         .map(|(session_id, quota, cached, error)| QuotaApiResponse {
@@ -570,7 +570,7 @@ pub async fn handle_quota_all(
             fetched_at: None,
         })
         .collect();
-    
+
     Json(serde_json::json!({"accounts": out})).into_response()
 }
 
@@ -600,10 +600,10 @@ pub async fn handle_oauth_url() -> Response {
             .into_response();
         }
     };
-    
+
     let settings = runtime_config::get();
     let redirect_uri = format!("http://localhost:{}/oauth-callback", settings.port);
-    
+
     let cfg = crate::config::Config::load();
     let url = match oauth::build_auth_url(&cfg, &redirect_uri, &state) {
         Ok(u) => u,
@@ -616,7 +616,7 @@ pub async fn handle_oauth_url() -> Response {
             .into_response();
         }
     };
-    
+
     Json(OAuthUrlResponse {
         url: Some(url),
         error: None,
@@ -657,7 +657,7 @@ pub async fn handle_oauth_parse_url(
         })
         .into_response();
     }
-    
+
     // 解析 URL（使用宽松解析）
     let (code, url_state) = match parse_oauth_url_lenient(pasted_url) {
         Ok(r) => r,
@@ -669,7 +669,7 @@ pub async fn handle_oauth_parse_url(
             .into_response();
         }
     };
-    
+
     // 验证 state
     if url_state.trim().is_empty() {
         return Json(OAuthParseUrlResponse {
@@ -678,7 +678,7 @@ pub async fn handle_oauth_parse_url(
         })
         .into_response();
     }
-    
+
     if !oauth::validate_state(&url_state).await {
         return Json(OAuthParseUrlResponse {
             success: false,
@@ -686,12 +686,12 @@ pub async fn handle_oauth_parse_url(
         })
         .into_response();
     }
-    
+
     // 交换 token
     let settings = runtime_config::get();
     let redirect_uri = format!("http://localhost:{}/oauth-callback", settings.port);
     let cfg = crate::config::Config::load();
-    
+
     tracing::info!("开始 OAuth 交换 Token...");
     let token_resp = match oauth::exchange_code_for_token(&cfg, &code, &redirect_uri).await {
         Ok(t) => t,
@@ -703,7 +703,7 @@ pub async fn handle_oauth_parse_url(
             .into_response();
         }
     };
-    
+
     // 获取用户邮箱（最佳努力）
     let email = match oauth::get_user_info(&cfg, &token_resp.access_token).await {
         Ok(ui) => ui.email,
@@ -712,7 +712,7 @@ pub async fn handle_oauth_parse_url(
             String::new()
         }
     };
-    
+
     // 确定项目 ID
     let mut project_id = req.custom_project_id.trim().to_string();
     if !project_id.is_empty() {
@@ -730,7 +730,7 @@ pub async fn handle_oauth_parse_url(
             }
         }
     }
-    
+
     if project_id.is_empty() && !req.allow_random_project_id {
         return Json(OAuthParseUrlResponse {
             success: false,
@@ -738,12 +738,12 @@ pub async fn handle_oauth_parse_url(
         })
         .into_response();
     }
-    
+
     if project_id.is_empty() && req.allow_random_project_id {
         project_id = id::project_id();
         tracing::info!("使用随机生成的项目ID: {project_id}");
     }
-    
+
     // 创建账号
     let now = chrono::Utc::now();
     let account = Account {
@@ -757,7 +757,7 @@ pub async fn handle_oauth_parse_url(
         enable: true,
         created_at: now,
     };
-    
+
     if let Err(e) = state.store.add(account).await {
         tracing::error!("保存账号失败: {e:#}");
         return Json(OAuthParseUrlResponse {
@@ -766,7 +766,7 @@ pub async fn handle_oauth_parse_url(
         })
         .into_response();
     }
-    
+
     tracing::info!("OAuth 登录成功: {email}");
     Json(OAuthParseUrlResponse {
         success: true,
@@ -779,39 +779,39 @@ pub async fn handle_oauth_parse_url(
 /// 支持：完整 URL、无协议 URL、仅路径等格式。
 fn parse_oauth_url_lenient(url: &str) -> Result<(String, String), String> {
     let url = url.trim();
-    
+
     // 尝试找到查询字符串
     let query_str = if let Some(idx) = url.find('?') {
         &url[idx + 1..]
     } else {
         return Err("回调 URL 中缺少 code 参数".to_string());
     };
-    
+
     // 解析查询参数
     let mut code = String::new();
     let mut state = String::new();
-    
+
     for pair in query_str.split('&') {
         let mut parts = pair.splitn(2, '=');
         let key = parts.next().unwrap_or("");
         let value = parts.next().unwrap_or("");
-        
+
         // URL 解码
         let decoded_value = urlencoding::decode(value)
             .map(|s| s.into_owned())
             .unwrap_or_else(|_| value.to_string());
-        
+
         match key {
             "code" => code = decoded_value,
             "state" => state = decoded_value,
             _ => {}
         }
     }
-    
+
     if code.is_empty() {
         return Err("回调 URL 中缺少 code 参数".to_string());
     }
-    
+
     Ok((code, state))
 }
 
@@ -823,18 +823,21 @@ fn parse_oauth_url_lenient(url: &str) -> Result<(String, String), String> {
 pub async fn handle_settings_get(headers: HeaderMap) -> Response {
     let settings = runtime_config::get();
     let webui_settings = WebUISettings::from_runtime(&settings);
-    
+
     if is_htmx(&headers) {
         let tmpl = templates::SettingsTemplate {
             settings: webui_settings,
         };
-        
+
         let mut resp_headers = HeaderMap::new();
-        resp_headers.insert(header::CONTENT_TYPE, "text/html; charset=utf-8".parse().unwrap());
-        
+        resp_headers.insert(
+            header::CONTENT_TYPE,
+            "text/html; charset=utf-8".parse().unwrap(),
+        );
+
         return (resp_headers, Html(tmpl.render().unwrap_or_default())).into_response();
     }
-    
+
     Json(webui_settings).into_response()
 }
 
@@ -857,7 +860,7 @@ pub async fn handle_settings_post(Json(req): Json<WebUISettings>) -> Response {
         })
         .into_response();
     }
-    
+
     // 持久化到 .env
     if let Err(e) = runtime_config::persist_to_dotenv(&req) {
         tracing::error!("保存设置失败: {e}");
@@ -867,19 +870,19 @@ pub async fn handle_settings_post(Json(req): Json<WebUISettings>) -> Response {
         })
         .into_response();
     }
-    
+
     // 更新运行时配置
     let current = runtime_config::get();
     let new_settings = req.apply_to_runtime(&current);
     runtime_config::update(new_settings.clone());
-    
+
     tracing::info!(
         "设置已更新: Debug={}, UserAgent={}, EndpointMode={}",
         new_settings.debug,
         new_settings.api_user_agent,
         new_settings.endpoint_mode
     );
-    
+
     Json(SettingsResponse {
         success: true,
         error: None,
@@ -891,22 +894,18 @@ pub async fn handle_settings_post(Json(req): Json<WebUISettings>) -> Response {
 // 认证中间件
 // ============================================================================
 
-use axum::middleware::Next;
 use axum::extract::Request;
+use axum::middleware::Next;
 
 /// Manager 认证中间件
-pub async fn manager_auth_middleware(
-    headers: HeaderMap,
-    request: Request,
-    next: Next,
-) -> Response {
+pub async fn manager_auth_middleware(headers: HeaderMap, request: Request, next: Next) -> Response {
     // 检查是否已认证
     if is_authenticated(&headers) {
         return next.run(request).await;
     }
-    
+
     let path = request.uri().path();
-    
+
     // API 路径返回 401
     if path.starts_with("/manager/api") {
         return (
@@ -915,7 +914,7 @@ pub async fn manager_auth_middleware(
         )
             .into_response();
     }
-    
+
     // 其他路径重定向到登录页
     Redirect::to("/login").into_response()
 }
