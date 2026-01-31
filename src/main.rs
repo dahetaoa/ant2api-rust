@@ -1,3 +1,8 @@
+// === Jemalloc 全局分配器配置（用于内存分析）===
+#[cfg(not(target_env = "msvc"))]
+#[global_allocator]
+static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 pub mod config;
 pub mod credential;
 pub mod error;
@@ -75,6 +80,7 @@ async fn main() -> anyhow::Result<()> {
     // === 公开路由（不需要认证）===
     let public_routes = Router::new()
         .route("/health", get(handle_health))
+        .route("/debug/pprof/heap", get(handle_pprof_heap))
         .route("/login", get(gateway::manager::handle_login_view))
         .route("/login", post(gateway::manager::handle_login))
         .route("/logout", get(gateway::manager::handle_logout));
@@ -210,3 +216,43 @@ async fn shutdown_signal() {
     let _ = tokio::signal::ctrl_c().await;
     tracing::info!("收到退出信号，准备关闭服务...");
 }
+
+/// 导出 jemalloc 堆内存分析数据（pprof 格式）
+/// 使用方式：
+/// 1. curl http://localhost:PORT/debug/pprof/heap > heap.pb.gz
+/// 2. go tool pprof -http=:8080 heap.pb.gz
+#[cfg(not(target_env = "msvc"))]
+async fn handle_pprof_heap() -> impl axum::response::IntoResponse {
+    use axum::http::{StatusCode, header};
+    use axum::response::Response;
+
+    match jemalloc_pprof::PROF_CTL.as_ref() {
+        Some(prof_ctl) => {
+            let mut prof = prof_ctl.lock().await;
+            match prof.dump_pprof() {
+                Ok(pprof_data) => Response::builder()
+                    .status(StatusCode::OK)
+                    .header(header::CONTENT_TYPE, "application/octet-stream")
+                    .header(header::CONTENT_DISPOSITION, "attachment; filename=\"heap.pb.gz\"")
+                    .body(axum::body::Body::from(pprof_data))
+                    .unwrap(),
+                Err(e) => Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .body(axum::body::Body::from(format!("Failed to dump pprof: {e}")))
+                    .unwrap(),
+            }
+        }
+        None => Response::builder()
+            .status(StatusCode::SERVICE_UNAVAILABLE)
+            .body(axum::body::Body::from(
+                "jemalloc profiling not enabled. Set MALLOC_CONF=prof:true before starting.",
+            ))
+            .unwrap(),
+    }
+}
+
+#[cfg(target_env = "msvc")]
+async fn handle_pprof_heap() -> &'static str {
+    "jemalloc profiling is not supported on MSVC targets"
+}
+

@@ -295,6 +295,12 @@ start_server() {
     echo ""
 
     cd "$SCRIPT_DIR"
+    # 启用 jemalloc heap profiling：
+    #   prof:true       - 启用堆分析
+    #   lg_prof_sample:19 - 采样间隔 ~512KB (2^19 bytes)
+    #   prof_active:true  - 立即激活分析
+    # 访问 /debug/pprof/heap 端点可获取内存快照
+    export MALLOC_CONF="${MALLOC_CONF:-prof:true,lg_prof_sample:19,prof_active:true}"
     exec "$SERVER_BIN" "$@"
 }
 

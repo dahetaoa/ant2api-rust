@@ -26,3 +26,8 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter", "json"] }
 urlencoding = "2.1"
 uuid = { version = "1.19.0", features = ["v4"] }
+
+# 内存分析工具
+[target.'cfg(not(target_env = "msvc"))'.dependencies]
+tikv-jemallocator = { version = "0.6", features = ["profiling", "unprefixed_malloc_on_supported_platforms"] }
+jemalloc_pprof = "0.6"
