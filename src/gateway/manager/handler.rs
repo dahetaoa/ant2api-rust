@@ -228,7 +228,9 @@ pub async fn handle_delete(
 ) -> Response {
     let idx = find_index_by_session_id(&state.store, &query.id).await;
 
-    if let Some(idx) = idx && state.store.delete(idx).await.is_ok() {
+    if let Some(idx) = idx
+        && state.store.delete(idx).await.is_ok()
+    {
         state.quota_pool.remove_session(&query.id).await;
         state.quota_cache.invalidate(&query.id).await;
         return "".into_response();

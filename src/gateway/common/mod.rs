@@ -1,3 +1,4 @@
+pub mod auth_retry;
 pub mod extract;
 pub mod retry;
 

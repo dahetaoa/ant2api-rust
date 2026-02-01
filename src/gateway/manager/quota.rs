@@ -101,7 +101,9 @@ impl QuotaCache {
         // 检查缓存
         if !force {
             let cache = self.cache.lock().await;
-            if let Some(entry) = cache.get(session_id) && now < entry.expires_at {
+            if let Some(entry) = cache.get(session_id)
+                && now < entry.expires_at
+            {
                 return (entry.quota.clone(), true, entry.error.clone());
             }
         }

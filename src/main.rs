@@ -49,6 +49,9 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    // 后台主动刷新：定期刷新即将过期的 token，尽量避免请求路径遭遇 401。
+    credential::refresh_task::spawn_token_refresh_task(store.clone(), cfg.clone());
+
     let sig_mgr = signature::manager::Manager::new(&cfg.data_dir)
         .await
         .context("初始化 signature manager 失败")?;
@@ -58,7 +61,12 @@ async fn main() -> anyhow::Result<()> {
 
     // 配额池：后台刷新各账号配额，并用于按模型分组选择更“有余额”的账号。
     let quota_pool = Arc::new(quota_pool::QuotaPoolManager::new());
-    quota_pool::spawn_refresh_task(store.clone(), (*vertex).clone(), quota_pool.clone());
+    quota_pool::spawn_refresh_task(
+        store.clone(),
+        cfg.clone(),
+        (*vertex).clone(),
+        quota_pool.clone(),
+    );
 
     // API 网关状态（OpenAI/Claude 共用同一份字段集合，便于注册多套路由）。
     let api_state = Arc::new(gateway::claude::ClaudeState {
@@ -233,7 +241,10 @@ async fn handle_pprof_heap() -> impl axum::response::IntoResponse {
                 Ok(pprof_data) => Response::builder()
                     .status(StatusCode::OK)
                     .header(header::CONTENT_TYPE, "application/octet-stream")
-                    .header(header::CONTENT_DISPOSITION, "attachment; filename=\"heap.pb.gz\"")
+                    .header(
+                        header::CONTENT_DISPOSITION,
+                        "attachment; filename=\"heap.pb.gz\"",
+                    )
                     .body(axum::body::Body::from(pprof_data))
                     .unwrap(),
                 Err(e) => Response::builder()
@@ -255,4 +266,3 @@ async fn handle_pprof_heap() -> impl axum::response::IntoResponse {
 async fn handle_pprof_heap() -> &'static str {
     "jemalloc profiling is not supported on MSVC targets"
 }
-

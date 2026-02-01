@@ -302,7 +302,10 @@ impl ClaudeStreamWriter {
                     typ: &'a str,
                 }
                 let event = Data {
-                    content_block: TextBlock { text: "", typ: "text" },
+                    content_block: TextBlock {
+                        text: "",
+                        typ: "text",
+                    },
                     index: idx,
                     typ: "content_block_start",
                 };
@@ -359,8 +362,8 @@ impl ClaudeStreamWriter {
             },
             typ: "message_start",
         };
-        let out =
-            serde_json::to_string(&event).unwrap_or_else(|_| "{\"type\":\"message_start\"}".to_string());
+        let out = serde_json::to_string(&event)
+            .unwrap_or_else(|_| "{\"type\":\"message_start\"}".to_string());
         let json = event.to_value();
         self.collect_plain_event_for_log(json);
         ("message_start", out)
@@ -418,7 +421,10 @@ impl ClaudeStreamWriter {
         }
 
         let event = Data {
-            delta: Delta { text, typ: "text_delta" },
+            delta: Delta {
+                text,
+                typ: "text_delta",
+            },
             index: idx,
             typ: "content_block_delta",
         };
@@ -702,17 +708,19 @@ impl ClaudeStreamWriter {
                 output_tokens: output_tokens.max(0),
             },
         };
-        let out =
-            serde_json::to_string(&event).unwrap_or_else(|_| "{\"type\":\"message_delta\"}".to_string());
+        let out = serde_json::to_string(&event)
+            .unwrap_or_else(|_| "{\"type\":\"message_delta\"}".to_string());
         let json = event.to_value();
         self.collect_plain_event_for_log(json);
         ("message_delta", out)
     }
 
     fn emit_message_stop(&mut self) -> (&'static str, String) {
-        let event = MessageStopEvent { typ: "message_stop" };
-        let out =
-            serde_json::to_string(&event).unwrap_or_else(|_| "{\"type\":\"message_stop\"}".to_string());
+        let event = MessageStopEvent {
+            typ: "message_stop",
+        };
+        let out = serde_json::to_string(&event)
+            .unwrap_or_else(|_| "{\"type\":\"message_stop\"}".to_string());
         let json = event.to_value();
         self.collect_plain_event_for_log(json);
         ("message_stop", out)
@@ -810,10 +818,8 @@ mod tests {
     fn thinking_delta_sse_field_order_stable() {
         use super::ClaudeStreamWriter;
 
-        let mut writer = ClaudeStreamWriter::new(
-            "req_test".to_string(),
-            "claude-3-opus-20240229".to_string(),
-        );
+        let mut writer =
+            ClaudeStreamWriter::new("req_test".to_string(), "claude-3-opus-20240229".to_string());
         let (_event, s) = writer.emit_thinking_delta("x");
         assert_eq!(
             s,

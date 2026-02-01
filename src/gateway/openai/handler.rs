@@ -2,6 +2,7 @@ use super::convert::{convert_usage, to_chat_completion, to_models_response, to_v
 use super::stream::{StreamWriter, now_unix, sse_error_events};
 use super::types::ChatRequest;
 use crate::gateway::common::AccountContext;
+use crate::gateway::common::auth_retry::is_auth_failure;
 use crate::gateway::common::retry::should_retry_with_next_token;
 use crate::logging;
 use crate::runtime_config;
@@ -90,6 +91,12 @@ pub async fn handle_list_models(
             }
             Err(e) => {
                 tracing::warn!(error = ?e, "fetchAvailableModels 失败");
+                // 认证失败：立即切换到下一个凭证，同时后台触发刷新（不阻塞请求路径）。
+                if is_auth_failure(&e) {
+                    state
+                        .store
+                        .trigger_background_refresh(acc.session_id.clone(), state.cfg.clone());
+                }
                 let retry = should_retry_with_next_token(&e);
                 last_err = Some(e);
                 if !retry {
@@ -257,7 +264,8 @@ pub async fn handle_chat_completions(
                 return openai_error(StatusCode::SERVICE_UNAVAILABLE, &e.to_string());
             }
         };
-        used_sessions.insert(acc.session_id.clone());
+        let session_id = acc.session_id.clone();
+        used_sessions.insert(session_id.clone());
         let project_id = if acc.project_id.is_empty() {
             id::project_id()
         } else {
@@ -278,6 +286,12 @@ pub async fn handle_chat_completions(
                 break;
             }
             Err(e) => {
+                // 认证失败：立即切换到下一个凭证，同时后台触发刷新（不阻塞请求路径）。
+                if is_auth_failure(&e) {
+                    state
+                        .store
+                        .trigger_background_refresh(session_id.clone(), state.cfg.clone());
+                }
                 let retry = should_retry_with_next_token(&e);
                 last_err = Some(e);
                 if !retry {
@@ -374,7 +388,8 @@ async fn handle_stream_with_retry(
                     return;
                 }
             };
-            used_sessions.insert(acc.session_id.clone());
+            let session_id = acc.session_id.clone();
+            used_sessions.insert(session_id.clone());
             let project_id = if acc.project_id.is_empty() {
                 id::project_id()
             } else {
@@ -394,6 +409,12 @@ async fn handle_stream_with_retry(
                     break;
                 }
                 Err(e) => {
+                    // 认证失败：立即切换到下一个凭证，同时后台触发刷新（不阻塞请求路径）。
+                    if is_auth_failure(&e) {
+                        state
+                            .store
+                            .trigger_background_refresh(session_id.clone(), state.cfg.clone());
+                    }
                     let retry = should_retry_with_next_token(&e);
                     last_err = Some(e);
                     if !retry {

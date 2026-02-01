@@ -1,6 +1,8 @@
 //! 后台刷新任务：周期性拉取各账号配额并更新 QuotaPoolManager。
 
+use crate::config::Config;
 use crate::credential::store::Store;
+use crate::gateway::common::auth_retry::is_auth_failure;
 use crate::gateway::manager::quota::group_quota_groups;
 use crate::quota_pool::QuotaPoolManager;
 use crate::runtime_config;
@@ -15,13 +17,14 @@ use std::time::Duration;
 /// - 单账号拉取：默认 0.2 秒间隔（避免对后端造成压力）
 pub fn spawn_refresh_task(
     store: Arc<Store>,
+    cfg: Config,
     vertex: VertexClient,
     pool_mgr: Arc<QuotaPoolManager>,
 ) {
     tokio::spawn(async move {
         // 启动后立即执行一次，尽快填充配额池；随后按周期刷新。
         loop {
-            if let Err(e) = refresh_once(store.clone(), &vertex, pool_mgr.clone()).await {
+            if let Err(e) = refresh_once(store.clone(), &cfg, &vertex, pool_mgr.clone()).await {
                 tracing::warn!("配额池后台刷新失败：{e:#}");
             }
             tokio::time::sleep(Duration::from_secs(10 * 60)).await;
@@ -31,6 +34,7 @@ pub fn spawn_refresh_task(
 
 async fn refresh_once(
     store: Arc<Store>,
+    cfg: &Config,
     vertex: &VertexClient,
     pool_mgr: Arc<QuotaPoolManager>,
 ) -> anyhow::Result<()> {
@@ -83,6 +87,10 @@ async fn refresh_once(
                 ok += 1;
             }
             Err(e) => {
+                // 认证失败：触发后台刷新，但不阻塞配额刷新流程。
+                if is_auth_failure(&e) {
+                    store.trigger_background_refresh(acc.session_id.clone(), cfg.clone());
+                }
                 failed += 1;
                 tracing::warn!(session_id = sid, error = ?e, "刷新账号配额失败");
             }
