@@ -255,7 +255,9 @@ pub async fn handle_messages(
         };
 
     let model = req.model.clone();
-    let is_stream = req.stream;
+    let is_claude_model = modelutil::is_claude(&model);
+    // Claude 模型始终走流式，避免非流式路径产生不一致行为。
+    let is_stream = req.stream || is_claude_model;
     drop(req);
 
     let mut attempts = state.store.enabled_count().await;
