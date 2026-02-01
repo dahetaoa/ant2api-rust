@@ -300,16 +300,15 @@ async fn extract_content_parts(
                             if let Some(e) = sig_mgr.lookup_by_tool_call_id(&tool_use_id).await {
                                 signature = e.signature.trim().to_string();
                             }
-                        } else if signature.len() <= 50 {
-                            if let Some(e) = sig_mgr
+                        } else if signature.len() <= 50
+                            && let Some(e) = sig_mgr
                                 .lookup_by_tool_call_id_and_signature_prefix(
                                     &tool_use_id,
                                     &signature,
                                 )
                                 .await
-                            {
-                                signature = e.signature.trim().to_string();
-                            }
+                        {
+                            signature = e.signature.trim().to_string();
                         }
                     }
 
@@ -355,13 +354,12 @@ async fn extract_content_parts(
                             if let Some(e) = sig_mgr.lookup_by_tool_call_id(&tool_use_id).await {
                                 data = e.signature.trim().to_string();
                             }
-                        } else if data.len() <= 50 {
-                            if let Some(e) = sig_mgr
+                        } else if data.len() <= 50
+                            && let Some(e) = sig_mgr
                                 .lookup_by_tool_call_id_and_signature_prefix(&tool_use_id, &data)
                                 .await
-                            {
-                                data = e.signature.trim().to_string();
-                            }
+                        {
+                            data = e.signature.trim().to_string();
                         }
                     }
                     if data.is_empty() {
@@ -469,8 +467,8 @@ async fn extract_content_parts(
 }
 
 fn lookahead_tool_use_id(blocks: &[sonic_rs::Value], start: usize) -> Option<String> {
-    for j in start..blocks.len() {
-        let Some(obj) = blocks[j].as_object() else {
+    for block in blocks.iter().skip(start) {
+        let Some(obj) = block.as_object() else {
             continue;
         };
         if obj.get(&"type").and_then(|v| v.as_str()) != Some("tool_use") {

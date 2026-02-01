@@ -73,7 +73,7 @@ impl QuotaPoolManager {
 
                     // remainingFraction=0 且 resetTime 在未来：更符合“冷却”语义，避免被频繁选中。
                     let should_cooldown =
-                        frac <= 0.0 && reset_dt.as_ref().map_or(false, |rt| *rt > now);
+                        frac <= 0.0 && reset_dt.as_ref().is_some_and(|rt| *rt > now);
                     if should_cooldown {
                         pool.active.remove(session_id);
                         if let Some(rt) = reset_dt {

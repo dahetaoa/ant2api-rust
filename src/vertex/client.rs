@@ -243,7 +243,7 @@ impl VertexClient {
             }
             let start = std::time::Instant::now();
             let resp = self
-                .http
+                .http_stream
                 .post(url.clone())
                 .headers(headers)
                 .body(body)

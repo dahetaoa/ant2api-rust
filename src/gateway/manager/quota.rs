@@ -101,10 +101,8 @@ impl QuotaCache {
         // 检查缓存
         if !force {
             let cache = self.cache.lock().await;
-            if let Some(entry) = cache.get(session_id) {
-                if now < entry.expires_at {
-                    return (entry.quota.clone(), true, entry.error.clone());
-                }
+            if let Some(entry) = cache.get(session_id) && now < entry.expires_at {
+                return (entry.quota.clone(), true, entry.error.clone());
             }
         }
 
@@ -344,28 +342,27 @@ fn parse_model_quota(value: &sonic_rs::Value) -> ModelQuota {
     };
 
     // 尝试直接解析
-    if let Some(mq) = parse_model_quota_map(obj) {
-        if mq.remaining_fraction.is_some() || mq.reset_time.is_some() {
-            return mq;
-        }
+    if let Some(mq) = parse_model_quota_map(obj)
+        && (mq.remaining_fraction.is_some() || mq.reset_time.is_some())
+    {
+        return mq;
     }
 
     // 尝试 quotaInfo
     let quota_info_key = "quotaInfo".to_string();
-    if let Some(qi) = obj.get(&quota_info_key).and_then(|v| v.as_object()) {
-        if let Some(mq) = parse_model_quota_map(qi) {
-            if mq.remaining_fraction.is_some() || mq.reset_time.is_some() {
-                return mq;
-            }
-        }
+    if let Some(qi) = obj.get(&quota_info_key).and_then(|v| v.as_object())
+        && let Some(mq) = parse_model_quota_map(qi)
+        && (mq.remaining_fraction.is_some() || mq.reset_time.is_some())
+    {
+        return mq;
     }
 
     // 尝试 quota
     let quota_key = "quota".to_string();
-    if let Some(q) = obj.get(&quota_key).and_then(|v| v.as_object()) {
-        if let Some(mq) = parse_model_quota_map(q) {
-            return mq;
-        }
+    if let Some(q) = obj.get(&quota_key).and_then(|v| v.as_object())
+        && let Some(mq) = parse_model_quota_map(q)
+    {
+        return mq;
     }
 
     ModelQuota {
@@ -382,7 +379,7 @@ fn parse_model_quota_map(obj: &sonic_rs::Object) -> Option<ModelQuota> {
     let has_remaining_fraction = obj.contains_key(&remaining_fraction_key);
     let remaining_fraction = obj
         .get(&remaining_fraction_key)
-        .and_then(|v| any_to_float64(v))
+        .and_then(any_to_float64)
         .map(clamp01);
 
     let reset_time = obj

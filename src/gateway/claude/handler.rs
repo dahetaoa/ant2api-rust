@@ -620,13 +620,27 @@ fn claude_error_body(msg: &str) -> String {
     format!("{{\"type\":\"error\",\"error\":{{\"type\":\"api_error\",\"message\":{encoded}}}}}")
 }
 
-fn claude_error_value(msg: &str) -> sonic_rs::Value {
-    let mut inner = sonic_rs::Object::new();
-    inner.insert("type", "api_error");
-    inner.insert("message", msg);
+#[derive(Serialize)]
+struct ClaudeErrorInner<'a> {
+    message: &'a str,
+    #[serde(rename = "type")]
+    typ: &'a str,
+}
 
-    let mut outer = sonic_rs::Object::new();
-    outer.insert("type", "error");
-    outer.insert("error", inner);
-    outer.into_value()
+#[derive(Serialize)]
+struct ClaudeErrorEvent<'a> {
+    error: ClaudeErrorInner<'a>,
+    #[serde(rename = "type")]
+    typ: &'a str,
+}
+
+fn claude_error_value(msg: &str) -> sonic_rs::Value {
+    sonic_rs::to_value(&ClaudeErrorEvent {
+        error: ClaudeErrorInner {
+            message: msg,
+            typ: "api_error",
+        },
+        typ: "error",
+    })
+    .unwrap_or_default()
 }

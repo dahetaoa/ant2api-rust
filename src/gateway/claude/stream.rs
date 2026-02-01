@@ -2,6 +2,75 @@ use crate::util::{id, model as modelutil};
 use crate::vertex::types::StreamDataPart;
 use serde::Serialize;
 
+#[derive(Serialize)]
+struct MessageStartUsage {
+    input_tokens: i32,
+    output_tokens: i32,
+}
+
+#[derive(Serialize)]
+struct MessageStartMessage<'a> {
+    content: Vec<sonic_rs::Value>,
+    id: &'a str,
+    model: &'a str,
+    role: &'a str,
+    stop_reason: Option<()>,
+    stop_sequence: Option<()>,
+    #[serde(rename = "type")]
+    typ: &'a str,
+    usage: MessageStartUsage,
+}
+
+#[derive(Serialize)]
+struct MessageStartEvent<'a> {
+    message: MessageStartMessage<'a>,
+    #[serde(rename = "type")]
+    typ: &'a str,
+}
+
+#[derive(Serialize)]
+struct MessageDeltaDelta<'a> {
+    stop_reason: &'a str,
+    stop_sequence: Option<()>,
+}
+
+#[derive(Serialize)]
+struct MessageDeltaUsage {
+    output_tokens: i32,
+}
+
+#[derive(Serialize)]
+struct MessageDeltaEvent<'a> {
+    delta: MessageDeltaDelta<'a>,
+    #[serde(rename = "type")]
+    typ: &'a str,
+    usage: MessageDeltaUsage,
+}
+
+#[derive(Serialize)]
+struct MessageStopEvent<'a> {
+    #[serde(rename = "type")]
+    typ: &'a str,
+}
+
+#[derive(Serialize)]
+struct LogDeltaInner<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    text: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<&'a str>,
+    #[serde(rename = "type")]
+    typ: &'a str,
+}
+
+#[derive(Serialize)]
+struct LogDeltaEvent<'a> {
+    delta: LogDeltaInner<'a>,
+    index: i32,
+    #[serde(rename = "type")]
+    typ: &'a str,
+}
+
 /// Claude SSE: 写入 `{"type":"error","error":{"type":"api_error","message":...}}` 事件并结束。
 pub fn sse_error_events(msg: &str) -> Vec<(&'static str, String)> {
     // 保持字段顺序稳定（对齐 Claude 官方输出），避免某些严格客户端按文本匹配解析失败。
@@ -191,59 +260,60 @@ impl ClaudeStreamWriter {
             self.signature_emitted = false;
         }
 
-        let json = match typ {
+        let (json, out) = match typ {
             BlockType::Thinking => {
                 #[derive(Serialize)]
                 struct ThinkingBlock<'a> {
+                    thinking: &'a str,
                     #[serde(rename = "type")]
                     typ: &'a str,
-                    thinking: &'a str,
                 }
                 #[derive(Serialize)]
                 struct Data<'a> {
+                    content_block: ThinkingBlock<'a>,
+                    index: i32,
                     #[serde(rename = "type")]
                     typ: &'a str,
-                    index: i32,
-                    content_block: ThinkingBlock<'a>,
                 }
-                Data {
-                    typ: "content_block_start",
-                    index: idx,
+                let event = Data {
                     content_block: ThinkingBlock {
-                        typ: "thinking",
                         thinking: "",
+                        typ: "thinking",
                     },
-                }
-                .to_value()
+                    index: idx,
+                    typ: "content_block_start",
+                };
+                let out = serde_json::to_string(&event)
+                    .unwrap_or_else(|_| "{\"type\":\"content_block_start\"}".to_string());
+                (event.to_value(), out)
             }
             BlockType::Text => {
                 #[derive(Serialize)]
                 struct TextBlock<'a> {
+                    text: &'a str,
                     #[serde(rename = "type")]
                     typ: &'a str,
-                    text: &'a str,
                 }
                 #[derive(Serialize)]
                 struct Data<'a> {
+                    content_block: TextBlock<'a>,
+                    index: i32,
                     #[serde(rename = "type")]
                     typ: &'a str,
-                    index: i32,
-                    content_block: TextBlock<'a>,
                 }
-                Data {
-                    typ: "content_block_start",
+                let event = Data {
+                    content_block: TextBlock { text: "", typ: "text" },
                     index: idx,
-                    content_block: TextBlock {
-                        typ: "text",
-                        text: "",
-                    },
-                }
-                .to_value()
+                    typ: "content_block_start",
+                };
+                let out = serde_json::to_string(&event)
+                    .unwrap_or_else(|_| "{\"type\":\"content_block_start\"}".to_string());
+                (event.to_value(), out)
             }
         };
 
-        self.collect_plain_event_for_log(json.clone());
-        ("content_block_start", to_json_string(&json))
+        self.collect_plain_event_for_log(json);
+        ("content_block_start", out)
     }
 
     fn close_current_block(&mut self) -> Vec<(&'static str, String)> {
@@ -253,45 +323,47 @@ impl ClaudeStreamWriter {
 
         #[derive(Serialize)]
         struct Data<'a> {
+            index: i32,
             #[serde(rename = "type")]
             typ: &'a str,
-            index: i32,
         }
 
-        let json = Data {
-            typ: "content_block_stop",
+        let event = Data {
             index: idx,
-        }
-        .to_value();
+            typ: "content_block_stop",
+        };
+        let out = serde_json::to_string(&event)
+            .unwrap_or_else(|_| "{\"type\":\"content_block_stop\"}".to_string());
+        let json = event.to_value();
 
-        self.collect_plain_event_for_log(json.clone());
-        vec![("content_block_stop", to_json_string(&json))]
+        self.collect_plain_event_for_log(json);
+        vec![("content_block_stop", out)]
     }
 
     fn emit_message_start(&mut self) -> (&'static str, String) {
         let msg_id = format!("msg_{}", self.request_id);
 
-        let mut usage = sonic_rs::Object::new();
-        usage.insert("input_tokens", self.input_tokens.max(0));
-        usage.insert("output_tokens", 0);
-
-        let mut message = sonic_rs::Object::new();
-        message.insert("id", msg_id.as_str());
-        message.insert("type", "message");
-        message.insert("role", "assistant");
-        message.insert("model", self.model.as_str());
-        message.insert("content", Vec::<sonic_rs::Value>::new());
-        message.insert("stop_reason", sonic_rs::Value::new());
-        message.insert("stop_sequence", sonic_rs::Value::new());
-        message.insert("usage", usage);
-
-        let mut outer = sonic_rs::Object::new();
-        outer.insert("type", "message_start");
-        outer.insert("message", message);
-
-        let json = outer.into_value();
-        self.collect_plain_event_for_log(json.clone());
-        ("message_start", to_json_string(&json))
+        let event = MessageStartEvent {
+            message: MessageStartMessage {
+                content: Vec::new(),
+                id: msg_id.as_str(),
+                model: self.model.as_str(),
+                role: "assistant",
+                stop_reason: None,
+                stop_sequence: None,
+                typ: "message",
+                usage: MessageStartUsage {
+                    input_tokens: self.input_tokens.max(0),
+                    output_tokens: 0,
+                },
+            },
+            typ: "message_start",
+        };
+        let out =
+            serde_json::to_string(&event).unwrap_or_else(|_| "{\"type\":\"message_start\"}".to_string());
+        let json = event.to_value();
+        self.collect_plain_event_for_log(json);
+        ("message_start", out)
     }
 
     fn emit_thinking_delta(&mut self, text: &str) -> (&'static str, String) {
@@ -299,31 +371,32 @@ impl ClaudeStreamWriter {
 
         #[derive(Serialize)]
         struct Delta<'a> {
+            thinking: &'a str,
             #[serde(rename = "type")]
             typ: &'a str,
-            thinking: &'a str,
         }
 
         #[derive(Serialize)]
         struct Data<'a> {
+            delta: Delta<'a>,
+            index: i32,
             #[serde(rename = "type")]
             typ: &'a str,
-            index: i32,
-            delta: Delta<'a>,
         }
 
-        let json = Data {
-            typ: "content_block_delta",
-            index: idx,
+        let event = Data {
             delta: Delta {
-                typ: "thinking_delta",
                 thinking: text,
+                typ: "thinking_delta",
             },
-        }
-        .to_value();
+            index: idx,
+            typ: "content_block_delta",
+        };
 
         self.collect_delta_for_log(BlockType::Thinking, idx, text);
-        ("content_block_delta", to_json_string(&json))
+        let out = serde_json::to_string(&event)
+            .unwrap_or_else(|_| "{\"type\":\"content_block_delta\"}".to_string());
+        ("content_block_delta", out)
     }
 
     fn emit_text_delta(&mut self, text: &str) -> (&'static str, String) {
@@ -331,61 +404,61 @@ impl ClaudeStreamWriter {
 
         #[derive(Serialize)]
         struct Delta<'a> {
+            text: &'a str,
             #[serde(rename = "type")]
             typ: &'a str,
-            text: &'a str,
         }
 
         #[derive(Serialize)]
         struct Data<'a> {
+            delta: Delta<'a>,
+            index: i32,
             #[serde(rename = "type")]
             typ: &'a str,
-            index: i32,
-            delta: Delta<'a>,
         }
 
-        let json = Data {
-            typ: "content_block_delta",
+        let event = Data {
+            delta: Delta { text, typ: "text_delta" },
             index: idx,
-            delta: Delta {
-                typ: "text_delta",
-                text,
-            },
-        }
-        .to_value();
+            typ: "content_block_delta",
+        };
 
         self.collect_delta_for_log(BlockType::Text, idx, text);
-        ("content_block_delta", to_json_string(&json))
+        let out = serde_json::to_string(&event)
+            .unwrap_or_else(|_| "{\"type\":\"content_block_delta\"}".to_string());
+        ("content_block_delta", out)
     }
 
     fn emit_signature_delta(&mut self, index: i32, signature: &str) -> (&'static str, String) {
         #[derive(Serialize)]
         struct Delta<'a> {
+            signature: &'a str,
             #[serde(rename = "type")]
             typ: &'a str,
-            signature: &'a str,
         }
 
         #[derive(Serialize)]
         struct Data<'a> {
+            delta: Delta<'a>,
+            index: i32,
             #[serde(rename = "type")]
             typ: &'a str,
-            index: i32,
-            delta: Delta<'a>,
         }
 
-        let json = Data {
-            typ: "content_block_delta",
-            index,
+        let event = Data {
             delta: Delta {
-                typ: "signature_delta",
                 signature,
+                typ: "signature_delta",
             },
-        }
-        .to_value();
+            index,
+            typ: "content_block_delta",
+        };
+        let out = serde_json::to_string(&event)
+            .unwrap_or_else(|_| "{\"type\":\"content_block_delta\"}".to_string());
+        let json = event.to_value();
 
-        self.collect_plain_event_for_log(json.clone());
-        ("content_block_delta", to_json_string(&json))
+        self.collect_plain_event_for_log(json);
+        ("content_block_delta", out)
     }
 
     fn flush_signature_to_current_block(&mut self) -> Vec<(&'static str, String)> {
@@ -473,9 +546,50 @@ impl ClaudeStreamWriter {
         }
 
         // Claude 官方 SSE：content_block_start 的 tool_use.input 为空对象，真实 input 通过 input_json_delta 流式传输。
-        let input_value = sonic_rs::to_value(&fc.args).unwrap_or_default();
-        let input_json = to_json_string(&input_value);
+        let input_json = serde_json::to_value(&fc.args)
+            .ok()
+            .and_then(|v| serde_json::to_string(&v).ok())
+            .unwrap_or_else(|| "{}".to_string());
         let empty_input = sonic_rs::Object::new().into_value();
+
+        #[derive(Serialize)]
+        struct ToolUseOrdered<'a> {
+            id: &'a str,
+            input: sonic_rs::Value,
+            name: &'a str,
+            #[serde(rename = "type")]
+            typ: &'a str,
+        }
+
+        #[derive(Serialize)]
+        struct StartOrdered<'a> {
+            content_block: ToolUseOrdered<'a>,
+            index: i32,
+            #[serde(rename = "type")]
+            typ: &'a str,
+        }
+
+        #[derive(Serialize)]
+        struct InputJsonDeltaOrdered<'a> {
+            partial_json: &'a str,
+            #[serde(rename = "type")]
+            typ: &'a str,
+        }
+
+        #[derive(Serialize)]
+        struct DeltaOrdered<'a> {
+            delta: InputJsonDeltaOrdered<'a>,
+            index: i32,
+            #[serde(rename = "type")]
+            typ: &'a str,
+        }
+
+        #[derive(Serialize)]
+        struct StopOrdered<'a> {
+            index: i32,
+            #[serde(rename = "type")]
+            typ: &'a str,
+        }
 
         let start_json = Start {
             typ: "content_block_start",
@@ -509,9 +623,34 @@ impl ClaudeStreamWriter {
         self.collect_plain_event_for_log(stop_json.clone());
 
         let mut events = Vec::with_capacity(3);
-        events.push(("content_block_start", to_json_string(&start_json)));
-        events.push(("content_block_delta", to_json_string(&delta_json)));
-        events.push(("content_block_stop", to_json_string(&stop_json)));
+        let start_out = serde_json::to_string(&StartOrdered {
+            content_block: ToolUseOrdered {
+                id: &tool_id,
+                input: sonic_rs::Object::new().into_value(),
+                name: fc.name.as_str(),
+                typ: "tool_use",
+            },
+            index: idx,
+            typ: "content_block_start",
+        })
+        .unwrap_or_else(|_| "{\"type\":\"content_block_start\"}".to_string());
+        let delta_out = serde_json::to_string(&DeltaOrdered {
+            delta: InputJsonDeltaOrdered {
+                partial_json: input_json.as_str(),
+                typ: "input_json_delta",
+            },
+            index: idx,
+            typ: "content_block_delta",
+        })
+        .unwrap_or_else(|_| "{\"type\":\"content_block_delta\"}".to_string());
+        let stop_out = serde_json::to_string(&StopOrdered {
+            index: idx,
+            typ: "content_block_stop",
+        })
+        .unwrap_or_else(|_| "{\"type\":\"content_block_stop\"}".to_string());
+        events.push(("content_block_start", start_out));
+        events.push(("content_block_delta", delta_out));
+        events.push(("content_block_stop", stop_out));
 
         let part_sig = part_signature.trim();
         let mut signature_to_save = String::new();
@@ -553,29 +692,30 @@ impl ClaudeStreamWriter {
         output_tokens: i32,
         stop_reason: &str,
     ) -> (&'static str, String) {
-        let mut usage = sonic_rs::Object::new();
-        usage.insert("output_tokens", output_tokens.max(0));
-
-        let mut delta = sonic_rs::Object::new();
-        delta.insert("stop_reason", stop_reason);
-        delta.insert("stop_sequence", sonic_rs::Value::new());
-
-        let mut outer = sonic_rs::Object::new();
-        outer.insert("type", "message_delta");
-        outer.insert("delta", delta);
-        outer.insert("usage", usage);
-
-        let json = outer.into_value();
-        self.collect_plain_event_for_log(json.clone());
-        ("message_delta", to_json_string(&json))
+        let event = MessageDeltaEvent {
+            delta: MessageDeltaDelta {
+                stop_reason,
+                stop_sequence: None,
+            },
+            typ: "message_delta",
+            usage: MessageDeltaUsage {
+                output_tokens: output_tokens.max(0),
+            },
+        };
+        let out =
+            serde_json::to_string(&event).unwrap_or_else(|_| "{\"type\":\"message_delta\"}".to_string());
+        let json = event.to_value();
+        self.collect_plain_event_for_log(json);
+        ("message_delta", out)
     }
 
     fn emit_message_stop(&mut self) -> (&'static str, String) {
-        let mut outer = sonic_rs::Object::new();
-        outer.insert("type", "message_stop");
-        let json = outer.into_value();
-        self.collect_plain_event_for_log(json.clone());
-        ("message_stop", to_json_string(&json))
+        let event = MessageStopEvent { typ: "message_stop" };
+        let out =
+            serde_json::to_string(&event).unwrap_or_else(|_| "{\"type\":\"message_stop\"}".to_string());
+        let json = event.to_value();
+        self.collect_plain_event_for_log(json);
+        ("message_stop", out)
     }
 
     fn collect_delta_for_log(&mut self, kind: BlockType, index: i32, text: &str) {
@@ -633,32 +773,48 @@ impl ClaudeStreamWriter {
     }
 }
 
-fn to_json_string(v: &sonic_rs::Value) -> String {
-    // sonic_rs 的 Object 序列化不保证字段顺序稳定（每次构造的 HashBuilder 种子不同），
-    // 这里转为 serde_json::Value（默认 BTreeMap）以输出确定性的 key 顺序。
-    let raw = sonic_rs::to_string(v).unwrap_or_else(|_| "{}".to_string());
-    match serde_json::from_str::<serde_json::Value>(&raw) {
-        Ok(v) => serde_json::to_string(&v).unwrap_or(raw),
-        Err(_) => raw,
+trait ToValue {
+    fn to_value(self) -> sonic_rs::Value;
+}
+
+impl<T> ToValue for T
+where
+    T: Serialize,
+{
+    fn to_value(self) -> sonic_rs::Value {
+        sonic_rs::to_value(&self).unwrap_or_default()
     }
+}
+
+fn build_delta_value(index: i32, delta_type: &str, field: &str, text: &str) -> sonic_rs::Value {
+    let (thinking, text) = match field {
+        "thinking" => (Some(text), None),
+        "text" => (None, Some(text)),
+        _ => (None, None),
+    };
+    LogDeltaEvent {
+        delta: LogDeltaInner {
+            text,
+            thinking,
+            typ: delta_type,
+        },
+        index,
+        typ: "content_block_delta",
+    }
+    .to_value()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::to_json_string;
-
     #[test]
-    fn to_json_string_orders_claude_delta_fields() {
-        let mut delta = sonic_rs::Object::new();
-        delta.insert("type", "thinking_delta");
-        delta.insert("thinking", "x");
+    fn thinking_delta_sse_field_order_stable() {
+        use super::ClaudeStreamWriter;
 
-        let mut outer = sonic_rs::Object::new();
-        outer.insert("type", "content_block_delta");
-        outer.insert("index", 0);
-        outer.insert("delta", delta);
-
-        let s = to_json_string(&outer.into_value());
+        let mut writer = ClaudeStreamWriter::new(
+            "req_test".to_string(),
+            "claude-3-opus-20240229".to_string(),
+        );
+        let (_event, s) = writer.emit_thinking_delta("x");
         assert_eq!(
             s,
             r#"{"delta":{"thinking":"x","type":"thinking_delta"},"index":0,"type":"content_block_delta"}"#
@@ -718,29 +874,4 @@ mod tests {
         assert!(partial.contains("ls -la"));
         assert!(partial.contains("列出当前目录下的所有文件"));
     }
-}
-
-trait ToValue {
-    fn to_value(self) -> sonic_rs::Value;
-}
-
-impl<T> ToValue for T
-where
-    T: Serialize,
-{
-    fn to_value(self) -> sonic_rs::Value {
-        sonic_rs::to_value(&self).unwrap_or_default()
-    }
-}
-
-fn build_delta_value(index: i32, delta_type: &str, field: &str, text: &str) -> sonic_rs::Value {
-    let mut delta = sonic_rs::Object::new();
-    delta.insert("type", delta_type);
-    delta.insert(field, text);
-
-    let mut outer = sonic_rs::Object::new();
-    outer.insert("type", "content_block_delta");
-    outer.insert("index", index);
-    outer.insert("delta", delta);
-    outer.into_value()
 }

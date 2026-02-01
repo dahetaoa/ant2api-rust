@@ -228,12 +228,10 @@ pub async fn handle_delete(
 ) -> Response {
     let idx = find_index_by_session_id(&state.store, &query.id).await;
 
-    if let Some(idx) = idx {
-        if state.store.delete(idx).await.is_ok() {
-            state.quota_pool.remove_session(&query.id).await;
-            state.quota_cache.invalidate(&query.id).await;
-            return "".into_response();
-        }
+    if let Some(idx) = idx && state.store.delete(idx).await.is_ok() {
+        state.quota_pool.remove_session(&query.id).await;
+        state.quota_cache.invalidate(&query.id).await;
+        return "".into_response();
     }
 
     (StatusCode::NOT_FOUND, "未找到").into_response()
