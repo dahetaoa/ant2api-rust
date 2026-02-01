@@ -10,10 +10,27 @@ pub fn sse_error_events(msg: &str) -> Vec<String> {
     vec![json, "[DONE]".to_string()]
 }
 
+fn image_signature_key(
+    inline: &crate::vertex::types::InlineData,
+    is_gemini_pro_image: bool,
+) -> String {
+    if !is_gemini_pro_image {
+        return inline.signature_key();
+    }
+
+    let s = inline.data.as_str();
+    if s.is_empty() {
+        return String::new();
+    }
+    let n = s.len().min(100);
+    s[..n].to_string()
+}
+
 #[derive(Debug)]
 pub struct SignatureSave {
     pub request_id: String,
     pub tool_call_id: String,
+    pub is_image_key: bool,
     pub signature: String,
     pub reasoning: String,
     pub model: String,
@@ -34,6 +51,7 @@ pub struct StreamWriter {
 
     pending_sig: String,
     is_claude_thinking: bool,
+    is_gemini_pro_image: bool,
 
     log_enabled: bool,
     log_events: Vec<sonic_rs::Value>,
@@ -50,6 +68,7 @@ impl StreamWriter {
         log_enabled: bool,
     ) -> Self {
         let is_claude_thinking = modelutil::is_claude_thinking(&model);
+        let is_gemini_pro_image = modelutil::is_gemini_pro_image(&model);
         Self {
             id,
             created,
@@ -62,6 +81,7 @@ impl StreamWriter {
             tool_calls: Vec::new(),
             pending_sig: String::new(),
             is_claude_thinking,
+            is_gemini_pro_image,
 
             log_enabled,
             log_events: Vec::new(),
@@ -88,14 +108,12 @@ impl StreamWriter {
         }
 
         if let Some(inline) = &part.inline_data {
-            let mut image_key = inline.data.as_str();
-            if image_key.len() > 20 {
-                image_key = &image_key[..20];
-            }
-            if !part.thought_signature.is_empty() {
+            let image_key = image_signature_key(inline, self.is_gemini_pro_image);
+            if !part.thought_signature.is_empty() && !image_key.is_empty() {
                 saves.push(SignatureSave {
                     request_id: self.request_id.clone(),
-                    tool_call_id: image_key.to_string(),
+                    tool_call_id: image_key,
+                    is_image_key: true,
                     signature: part.thought_signature.clone(),
                     reasoning: std::mem::take(&mut self.pending_reasoning),
                     model: self.model.clone(),
@@ -134,6 +152,7 @@ impl StreamWriter {
                 saves.push(SignatureSave {
                     request_id: self.request_id.clone(),
                     tool_call_id: tool_call_id.clone(),
+                    is_image_key: false,
                     signature: sig,
                     reasoning: std::mem::take(&mut self.pending_reasoning),
                     model: self.model.clone(),

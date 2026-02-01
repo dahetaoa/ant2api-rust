@@ -88,10 +88,27 @@ pub fn sse_error_events(msg: &str) -> Vec<(&'static str, String)> {
     ]
 }
 
+fn image_signature_key(
+    inline: &crate::vertex::types::InlineData,
+    is_gemini_pro_image: bool,
+) -> String {
+    if !is_gemini_pro_image {
+        return inline.signature_key();
+    }
+
+    let s = inline.data.as_str();
+    if s.is_empty() {
+        return String::new();
+    }
+    let n = s.len().min(100);
+    s[..n].to_string()
+}
+
 #[derive(Debug)]
 pub struct SignatureSave {
     pub request_id: String,
     pub tool_call_id: String,
+    pub is_image_key: bool,
     pub signature: String,
     pub reasoning: String,
     pub model: String,
@@ -123,6 +140,7 @@ pub struct ClaudeStreamWriter {
     pending_thinking_text: String,
     signature_emitted: bool,
     enable_signature: bool, // true for Claude models only
+    is_gemini_pro_image: bool,
 
     // 仅用于客户端流式日志（合并连续 delta，避免刷屏）
     log_enabled: bool,
@@ -146,6 +164,7 @@ impl ClaudeStreamWriter {
             pending_thinking_text: String::new(),
             signature_emitted: false,
             enable_signature: modelutil::is_claude(&model),
+            is_gemini_pro_image: modelutil::is_gemini_pro_image(&model),
 
             log_enabled: false,
             log_events: Vec::new(),
@@ -218,6 +237,38 @@ impl ClaudeStreamWriter {
                 events.push(self.open_block(BlockType::Text));
             }
             events.push(self.emit_text_delta(&part.text));
+        } else if let Some(inline) = &part.inline_data {
+            if self.current_block.map(|(_, t)| t) != Some(BlockType::Text) {
+                events.extend(self.flush_signature_to_current_block());
+                events.extend(self.close_current_block());
+                events.push(self.open_block(BlockType::Text));
+            }
+
+            let image_key = image_signature_key(inline, self.is_gemini_pro_image);
+            let part_sig = part.thought_signature.trim();
+            if !part_sig.is_empty() && !image_key.is_empty() {
+                let mut reasoning = self.pending_thinking_text.trim().to_string();
+                if reasoning.is_empty() {
+                    reasoning = "[missing thought text]".to_string();
+                }
+                saves.push(SignatureSave {
+                    request_id: self.request_id.clone(),
+                    tool_call_id: image_key,
+                    is_image_key: true,
+                    signature: part_sig.to_string(),
+                    reasoning,
+                    model: self.model.clone(),
+                });
+            }
+
+            let data = inline.data.as_str();
+            let mut sb = String::with_capacity(10 + inline.mime_type.len() + data.len());
+            sb.push_str("![image](data:");
+            sb.push_str(&inline.mime_type);
+            sb.push_str(";base64,");
+            sb.push_str(data);
+            sb.push(')');
+            events.push(self.emit_text_delta(&sb));
         } else if let Some(fc) = &part.function_call {
             // tool_use：关闭当前块，按 Claude SSE 规范输出 tool_use，并通过 input_json_delta 传输 input
             events.extend(self.close_current_block());
@@ -679,6 +730,7 @@ impl ClaudeStreamWriter {
             Some(SignatureSave {
                 request_id: self.request_id.clone(),
                 tool_call_id: tool_id.clone(),
+                is_image_key: false,
                 signature: signature_to_save,
                 reasoning,
                 model: self.model.clone(),

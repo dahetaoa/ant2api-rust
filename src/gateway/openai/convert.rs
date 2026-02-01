@@ -2,6 +2,7 @@ use crate::config::Config;
 use crate::gateway::common::extract::{extract_system_from_messages, extract_text_from_content};
 use crate::gateway::common::{AccountContext, find_function_name};
 use crate::signature::manager::Manager as SignatureManager;
+use crate::signature::types::FALLBACK_SIGNATURE;
 use crate::util::{id, model as modelutil};
 use crate::vertex::sanitize::{
     inject_agent_system_prompt, sanitize_contents, sanitize_function_parameters_schema,
@@ -100,12 +101,13 @@ async fn to_vertex_contents(
     let model = req.model.trim();
     let is_claude_thinking = modelutil::is_claude_thinking(model);
     let is_gemini = modelutil::is_gemini(model);
+    let is_gemini_pro_image = modelutil::is_gemini_pro_image(model);
 
     for m in &mut req.messages {
         match m.role.as_str() {
             "system" => continue,
             "user" => {
-                let parts = extract_user_parts(&mut m.content, sig_mgr).await?;
+                let parts = extract_user_parts(&mut m.content, sig_mgr, is_gemini_pro_image).await?;
                 out.push(Content {
                     role: "user".to_string(),
                     parts,
@@ -160,7 +162,7 @@ async fn to_vertex_contents(
 
                 let t = extract_text_from_content(&m.content, "\n", false);
                 if !t.is_empty() {
-                    let images = parse_markdown_images(&t, sig_mgr).await?;
+                    let images = parse_markdown_images(&t, sig_mgr, is_gemini_pro_image).await?;
                     if images.is_empty() {
                         parts.push(Part {
                             text: t,
@@ -326,6 +328,7 @@ async fn merge_tool_only_assistant_messages(req: &mut ChatRequest, sig_mgr: &Sig
 async fn extract_user_parts(
     content: &mut sonic_rs::Value,
     sig_mgr: &SignatureManager,
+    is_gemini_pro_image: bool,
 ) -> anyhow::Result<Vec<Part>> {
     let mut out: Vec<Part> = Vec::new();
 
@@ -367,15 +370,21 @@ async fn extract_user_parts(
                     continue;
                 };
 
-                let image_key = inline.signature_key();
+                let image_key = image_signature_key(&inline, is_gemini_pro_image);
                 let sig = if image_key.is_empty() {
                     String::new()
                 } else {
                     sig_mgr
-                        .lookup_by_tool_call_id(&image_key)
+                        .lookup_by_image_key(&image_key)
                         .await
                         .map(|e| e.signature)
-                        .unwrap_or_default()
+                        .unwrap_or_else(|| {
+                            if is_gemini_pro_image {
+                                FALLBACK_SIGNATURE.to_string()
+                            } else {
+                                String::new()
+                            }
+                        })
                 };
 
                 out.push(Part {
@@ -520,6 +529,7 @@ struct MarkdownImage {
 async fn parse_markdown_images(
     content: &str,
     sig_mgr: &SignatureManager,
+    is_gemini_pro_image: bool,
 ) -> anyhow::Result<Vec<MarkdownImage>> {
     let matches = parse_markdown_image_matches(content);
     if matches.is_empty() {
@@ -531,15 +541,21 @@ async fn parse_markdown_images(
         let Some(inline) = match_markdown_inline_data(&m.mime_type, &m.data) else {
             continue;
         };
-        let image_key = inline.signature_key();
+        let image_key = image_signature_key(&inline, is_gemini_pro_image);
         let sig = if image_key.is_empty() {
             String::new()
         } else {
             sig_mgr
-                .lookup_by_tool_call_id(&image_key)
+                .lookup_by_image_key(&image_key)
                 .await
                 .map(|e| e.signature)
-                .unwrap_or_default()
+                .unwrap_or_else(|| {
+                    if is_gemini_pro_image {
+                        FALLBACK_SIGNATURE.to_string()
+                    } else {
+                        String::new()
+                    }
+                })
         };
         out.push(MarkdownImage {
             inline,
@@ -632,6 +648,22 @@ fn parse_image_url(url: &str) -> Option<crate::vertex::types::InlineData> {
     ))
 }
 
+fn image_signature_key(
+    inline: &crate::vertex::types::InlineData,
+    is_gemini_pro_image: bool,
+) -> String {
+    if !is_gemini_pro_image {
+        return inline.signature_key();
+    }
+
+    let s = inline.data.as_str();
+    if s.is_empty() {
+        return String::new();
+    }
+    let n = s.len().min(100);
+    s[..n].to_string()
+}
+
 fn parse_args(args: &str) -> HashMap<String, sonic_rs::Value> {
     if args.is_empty() {
         return HashMap::new();
@@ -706,6 +738,7 @@ pub async fn to_chat_completion(
     let mut tool_calls: Vec<ToolCall> = Vec::new();
 
     let is_claude_thinking = modelutil::is_claude_thinking(model);
+    let is_gemini_pro_image = modelutil::is_gemini_pro_image(model);
     let mut pending_sig = String::new();
     let mut pending_reasoning = String::new();
 
@@ -723,18 +756,17 @@ pub async fn to_chat_completion(
             continue;
         }
         if let Some(inline) = &p.inline_data {
-            let image_key = inline.signature_key();
+            let image_key = image_signature_key(inline, is_gemini_pro_image);
             if !p.thought_signature.is_empty() {
                 sig_mgr
-                    .save(
-                        request_id,
-                        &image_key,
-                        &p.thought_signature,
-                        &pending_reasoning,
-                        model,
+                    .save_image_key(
+                        request_id.to_string(),
+                        image_key,
+                        p.thought_signature.clone(),
+                        std::mem::take(&mut pending_reasoning),
+                        model.to_string(),
                     )
                     .await;
-                pending_reasoning.clear();
             }
             let data = inline.data.as_str();
             let mut sb = String::with_capacity(10 + inline.mime_type.len() + data.len());

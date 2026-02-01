@@ -32,6 +32,8 @@ pub struct RuntimeSettings {
     pub endpoint_mode: String,
     /// 服务端口（只读，用于 OAuth redirect_uri）
     pub port: u16,
+    /// 签名缓存保留天数（用于清理过期 .idx/.jsonl）
+    pub cache_retention_days: u32,
 }
 
 impl RuntimeSettings {
@@ -45,6 +47,7 @@ impl RuntimeSettings {
             api_key: cfg.api_key.clone(),
             endpoint_mode: normalize_endpoint_mode(&cfg.endpoint_mode),
             port: cfg.port,
+            cache_retention_days: cfg.cache_retention_days.max(1),
         }
     }
 
@@ -77,6 +80,7 @@ pub fn get() -> Arc<RuntimeSettings> {
                 api_key: String::new(),
                 endpoint_mode: ENDPOINT_MODE_PRODUCTION.to_string(),
                 port: 8045,
+                cache_retention_days: 7,
             })
         })
 }
@@ -99,6 +103,8 @@ pub struct WebUISettings {
     pub gemini3_media_resolution: String,
     #[serde(default)]
     pub endpoint_mode: String,
+    #[serde(default)]
+    pub cache_retention_days: u32,
 }
 
 impl WebUISettings {
@@ -111,6 +117,7 @@ impl WebUISettings {
             user_agent: rt.api_user_agent.clone(),
             gemini3_media_resolution: rt.gemini3_media_resolution.clone(),
             endpoint_mode: rt.endpoint_mode.clone(),
+            cache_retention_days: rt.cache_retention_days,
         }
     }
 
@@ -118,6 +125,9 @@ impl WebUISettings {
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.webui_password.trim().is_empty() {
             return Err("WebUI 登录密码不能为空");
+        }
+        if self.cache_retention_days < 1 {
+            return Err("缓存保留天数必须大于 0");
         }
         let debug = self.debug.trim().to_lowercase();
         if !debug.is_empty()
@@ -166,6 +176,7 @@ impl WebUISettings {
             api_key: self.api_key.trim().to_string(),
             endpoint_mode: self.normalized_endpoint_mode(),
             port: current.port,
+            cache_retention_days: self.cache_retention_days.max(1),
         }
     }
 }
@@ -213,6 +224,7 @@ pub fn current_endpoint() -> crate::vertex::client::Endpoint {
 
 /// 持久化设置到 .env 文件。
 pub fn persist_to_dotenv(settings: &WebUISettings) -> Result<(), String> {
+    let retention = settings.cache_retention_days.max(1).to_string();
     let updates = [
         ("API_KEY", settings.api_key.trim()),
         ("WEBUI_PASSWORD", settings.webui_password.trim()),
@@ -223,6 +235,7 @@ pub fn persist_to_dotenv(settings: &WebUISettings) -> Result<(), String> {
             &normalize_media_resolution(&settings.gemini3_media_resolution),
         ),
         ("ENDPOINT_MODE", &settings.normalized_endpoint_mode()),
+        ("CACHE_RETENTION_DAYS", retention.as_str()),
     ];
 
     let dotenv_path =
@@ -352,6 +365,7 @@ mod tests {
             user_agent: String::new(),
             gemini3_media_resolution: String::new(),
             endpoint_mode: ENDPOINT_MODE_PRODUCTION.to_string(),
+            cache_retention_days: 7,
         };
 
         for level in ["off", "low", "medium", "high", "  HIGH  ", ""] {

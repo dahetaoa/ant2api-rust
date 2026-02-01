@@ -1,7 +1,7 @@
 use crate::signature::cache::SignatureCache;
-use crate::signature::types::{Entry, EntryIndex, signature_prefix};
+use crate::signature::types::{Entry, EntryIndex};
 use anyhow::{Context, anyhow};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -40,11 +40,13 @@ struct WriterState {
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
 struct IndexRecord {
-    record_id: String,
-    offset: u64,
-    length: u32,
+    #[serde(rename = "k", alias = "recordId")]
+    k: String,
+    #[serde(rename = "o", alias = "offset")]
+    o: u64,
+    #[serde(rename = "l", alias = "length")]
+    l: u32,
 }
 
 #[derive(Debug, Default)]
@@ -124,7 +126,7 @@ impl Store {
                     Ok(v) => v,
                     Err(_) => continue,
                 };
-                let Some((request_id, tool_call_id)) = split_record_id(&rec.record_id) else {
+                let Some((request_id, tool_call_id)) = split_record_id(&rec.k) else {
                     continue;
                 };
                 self.cache
@@ -141,7 +143,7 @@ impl Store {
         Ok(())
     }
 
-    pub async fn load_by_index(&self, idx: &EntryIndex) -> Option<Entry> {
+    pub async fn load_by_index(self: &Arc<Self>, idx: &EntryIndex) -> Option<Entry> {
         let key = idx.key()?;
         if idx.tool_call_id.is_empty() {
             return None;
@@ -150,10 +152,6 @@ impl Store {
         if idx.date.is_empty() {
             let hot = self.hot.read().await;
             let cur = hot.by_key.get(&key)?;
-            if !idx.signature_prefix.is_empty() && !cur.signature.starts_with(&idx.signature_prefix)
-            {
-                return None;
-            }
             let mut e = cur.as_ref().clone();
             if let Some(last_access) = idx.last_access {
                 e.last_access = last_access;
@@ -166,13 +164,40 @@ impl Store {
         if e.signature.is_empty() || e.request_id.is_empty() || e.tool_call_id.is_empty() {
             return None;
         }
-        if !idx.signature_prefix.is_empty() && !e.signature.starts_with(&idx.signature_prefix) {
-            return None;
-        }
         if let Some(last_access) = idx.last_access {
             e.last_access = last_access;
         }
+
+        let today = Utc::now().format("%Y-%m-%d").to_string();
+        if idx.date != today {
+            let store = self.clone();
+            let migrated = e.clone();
+            tokio::spawn(async move {
+                store.migrate_entry_to_today(&migrated).await;
+            });
+        }
         Some(e)
+    }
+
+    pub async fn migrate_entry_to_today(&self, entry: &Entry) {
+        if entry.request_id.is_empty() || entry.tool_call_id.is_empty() || entry.signature.is_empty()
+        {
+            return;
+        }
+
+        let e = Arc::new(entry.clone());
+        self.put_hot(e.clone()).await;
+        self.cache
+            .put(EntryIndex {
+                request_id: e.request_id.clone(),
+                tool_call_id: e.tool_call_id.clone(),
+                model: e.model.clone(),
+                created_at: Some(e.created_at),
+                last_access: Some(e.last_access),
+                date: String::new(),
+            })
+            .await;
+        self.enqueue(e).await;
     }
 
     async fn load_record(&self, date: &str, record_id: &str) -> anyhow::Result<Vec<u8>> {
@@ -215,7 +240,7 @@ impl Store {
                 Ok(v) => v,
                 Err(_) => continue,
             };
-            map.insert(rec.record_id, (rec.offset, rec.length));
+            map.insert(rec.k, (rec.o, rec.l));
         }
 
         let mut readers = self.readers.lock().await;
@@ -318,9 +343,9 @@ impl Store {
                 }
 
                 let rec = IndexRecord {
-                    record_id: record_id.clone(),
-                    offset,
-                    length,
+                    k: record_id.clone(),
+                    o: offset,
+                    l: length,
                 };
                 {
                     let idx = writer
@@ -344,7 +369,6 @@ impl Store {
                         model: e.model.clone(),
                         created_at: Some(e.created_at),
                         last_access: Some(e.last_access),
-                        signature_prefix: signature_prefix(&e.signature),
                         date: date.clone(),
                     },
                     record_id,
@@ -430,4 +454,57 @@ fn split_record_id(record_id: &str) -> Option<(String, String)> {
         return None;
     }
     Some((request_id.to_string(), tool_call_id.to_string()))
+}
+
+pub async fn cleanup_signature_cache_files(
+    data_dir: &str,
+    cache_retention_days: u32,
+) -> anyhow::Result<usize> {
+    let cache_retention_days = cache_retention_days.max(1);
+    let min_age_to_delete_days: i64 = cache_retention_days.max(2).into();
+
+    let cache_dir = PathBuf::from(data_dir).join("signatures");
+    let mut dir = match tokio::fs::read_dir(&cache_dir).await {
+        Ok(v) => v,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(e.into()),
+    };
+
+    let today = Utc::now().date_naive();
+    let mut deleted = 0usize;
+
+    while let Some(de) = dir.next_entry().await? {
+        if !de.file_type().await?.is_file() {
+            continue;
+        }
+
+        let name = de.file_name().to_string_lossy().to_string();
+        let (date_str, is_target) = if name.ends_with(".idx") {
+            (name.trim_end_matches(".idx"), true)
+        } else if name.ends_with(".jsonl") {
+            (name.trim_end_matches(".jsonl"), true)
+        } else {
+            ("", false)
+        };
+        if !is_target || date_str.len() != 10 {
+            continue;
+        }
+
+        let Ok(file_date) = NaiveDate::parse_from_str(date_str, "%Y-%m-%d") else {
+            continue;
+        };
+        let age_days = (today - file_date).num_days();
+        if age_days < min_age_to_delete_days {
+            continue;
+        }
+
+        let path = de.path();
+        match tokio::fs::remove_file(&path).await {
+            Ok(_) => deleted += 1,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+
+    Ok(deleted)
 }

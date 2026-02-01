@@ -18,6 +18,7 @@ use crate::gateway::manager::quota::{AccountQuota, QuotaCache, QuotaGroup};
 use crate::gateway::manager::templates::{self, ViewAccount, ViewQuotaGroup, to_view_accounts};
 use crate::quota_pool::QuotaPoolManager;
 use crate::runtime_config::{self, WebUISettings};
+use crate::signature;
 use crate::util::id;
 use crate::vertex::client::VertexClient;
 
@@ -29,6 +30,7 @@ pub struct ManagerState {
     pub vertex: Arc<VertexClient>,
     pub quota_cache: QuotaCache,
     pub quota_pool: Arc<QuotaPoolManager>,
+    pub data_dir: String,
 }
 
 /// Cookie 名称
@@ -888,6 +890,39 @@ pub async fn handle_settings_post(Json(req): Json<WebUISettings>) -> Response {
         error: None,
     })
     .into_response()
+}
+
+/// 缓存清理响应
+#[derive(Serialize)]
+struct CacheCleanupResponse {
+    success: bool,
+    deleted: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+/// POST /manager/api/cache/cleanup - 清理过期签名缓存文件
+pub async fn handle_cache_cleanup(State(state): State<Arc<ManagerState>>) -> Response {
+    let settings = runtime_config::get();
+    let days = settings.cache_retention_days.max(1);
+
+    match signature::store::cleanup_signature_cache_files(&state.data_dir, days).await {
+        Ok(deleted) => Json(CacheCleanupResponse {
+            success: true,
+            deleted,
+            error: None,
+        })
+        .into_response(),
+        Err(e) => {
+            tracing::error!("清理签名缓存失败: {e:#}");
+            Json(CacheCleanupResponse {
+                success: false,
+                deleted: 0,
+                error: Some(format!("清理失败: {e}")),
+            })
+            .into_response()
+        }
+    }
 }
 
 // ============================================================================

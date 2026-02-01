@@ -2,6 +2,7 @@ use crate::config::Config;
 use crate::gateway::common::extract::{extract_claude_system_text, extract_text_from_content};
 use crate::gateway::common::{AccountContext, find_function_name};
 use crate::signature::manager::Manager as SignatureManager;
+use crate::signature::types::FALLBACK_SIGNATURE;
 use crate::util::{id, model as modelutil};
 use crate::vertex::sanitize::{
     inject_agent_system_prompt, sanitize_contents, sanitize_function_parameters_schema,
@@ -296,25 +297,15 @@ async fn extract_content_parts(
                 if is_claude_model {
                     // 部分客户端不会持久化 signature，尝试用后续 tool_use 的 id 从缓存中恢复。
                     if let Some(tool_use_id) = lookahead_tool_use_id(arr, i + 1) {
-                        if signature.is_empty() {
+                        if signature.is_empty() || signature.len() <= 50 {
                             if let Some(e) = sig_mgr.lookup_by_tool_call_id(&tool_use_id).await {
                                 signature = e.signature.trim().to_string();
                             }
-                        } else if signature.len() <= 50
-                            && let Some(e) = sig_mgr
-                                .lookup_by_tool_call_id_and_signature_prefix(
-                                    &tool_use_id,
-                                    &signature,
-                                )
-                                .await
-                        {
-                            signature = e.signature.trim().to_string();
                         }
                     }
 
-                    // 仍无法恢复：跳过该块，避免发送无效 extended thinking 历史。
                     if signature.is_empty() {
-                        continue;
+                        signature = FALLBACK_SIGNATURE.to_string();
                     }
 
                     // Edge case：只有签名没有 thinking 文本时注入占位符。
@@ -350,20 +341,14 @@ async fn extract_content_parts(
                 if is_claude_model {
                     // 部分客户端会丢失 opaque payload，尝试用后续 tool_use 的 id 从缓存中恢复。
                     if let Some(tool_use_id) = lookahead_tool_use_id(arr, i + 1) {
-                        if data.is_empty() {
+                        if data.is_empty() || data.len() <= 50 {
                             if let Some(e) = sig_mgr.lookup_by_tool_call_id(&tool_use_id).await {
                                 data = e.signature.trim().to_string();
                             }
-                        } else if data.len() <= 50
-                            && let Some(e) = sig_mgr
-                                .lookup_by_tool_call_id_and_signature_prefix(&tool_use_id, &data)
-                                .await
-                        {
-                            data = e.signature.trim().to_string();
                         }
                     }
                     if data.is_empty() {
-                        continue;
+                        data = FALLBACK_SIGNATURE.to_string();
                     }
                     // Cloud Code 使用 thoughtSignature 作为 opaque 校验字段；text 置空。
                     out.push(Part {

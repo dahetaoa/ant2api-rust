@@ -599,6 +599,7 @@ mod tests {
             data_dir,
             webui_password: String::new(),
             gemini3_media_resolution: String::new(),
+            cache_retention_days: 7,
         }
     }
 

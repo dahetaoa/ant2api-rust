@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-pub const SIGNATURE_PREFIX_LEN: usize = 50;
+pub const FALLBACK_SIGNATURE: &str = "context_engineering_is_the_way_to_go";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Entry {
@@ -12,6 +12,8 @@ pub struct Entry {
     pub request_id: String,
     #[serde(rename = "toolCallID")]
     pub tool_call_id: String,
+    #[serde(skip_serializing_if = "is_false", default)]
+    pub is_image_key: bool,
     pub model: String,
     pub created_at: DateTime<Utc>,
     pub last_access: DateTime<Utc>,
@@ -39,8 +41,6 @@ pub struct EntryIndex {
     pub created_at: Option<DateTime<Utc>>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub last_access: Option<DateTime<Utc>>,
-    #[serde(skip_serializing_if = "String::is_empty", default)]
-    pub signature_prefix: String,
     /// Date 指向存储分片（YYYY-MM-DD）；热数据（未落盘）为 ""。
     #[serde(skip_serializing_if = "String::is_empty", default)]
     pub date: String,
@@ -55,12 +55,6 @@ impl EntryIndex {
     }
 }
 
-pub fn signature_prefix(signature: &str) -> String {
-    if signature.is_empty() {
-        return String::new();
-    }
-    if signature.len() <= SIGNATURE_PREFIX_LEN {
-        return signature.to_string();
-    }
-    signature[..SIGNATURE_PREFIX_LEN].to_string()
+fn is_false(v: &bool) -> bool {
+    !*v
 }

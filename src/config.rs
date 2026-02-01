@@ -7,6 +7,7 @@ const DEFAULT_HOST: &str = "0.0.0.0";
 const DEFAULT_PORT: u16 = 8045;
 const DEFAULT_TIMEOUT_MS: u64 = 180_000;
 const DEFAULT_USER_AGENT: &str = "antigravity/1.11.3 windows/amd64";
+const DEFAULT_CACHE_RETENTION_DAYS: u32 = 7;
 
 pub const DEFAULT_GOOGLE_CLIENT_ID: &str =
     "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com";
@@ -36,6 +37,7 @@ pub struct Config {
     pub data_dir: String,
     pub webui_password: String,
     pub gemini3_media_resolution: String,
+    pub cache_retention_days: u32,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -76,6 +78,8 @@ struct RawEnv {
     webui_password: Option<String>,
     #[serde(alias = "GEMINI3_MEDIA_RESOLUTION")]
     gemini3_media_resolution: Option<String>,
+    #[serde(alias = "CACHE_RETENTION_DAYS")]
+    cache_retention_days: Option<u32>,
 }
 
 impl Config {
@@ -107,6 +111,9 @@ impl Config {
             data_dir: raw.data_dir.unwrap_or_else(|| "./data".to_string()),
             webui_password: raw.webui_password.unwrap_or_default(),
             gemini3_media_resolution: raw.gemini3_media_resolution.unwrap_or_default(),
+            cache_retention_days: raw
+                .cache_retention_days
+                .unwrap_or(DEFAULT_CACHE_RETENTION_DAYS),
         };
 
         // 兼容 Go 版本的命令行覆盖：-debug <level>

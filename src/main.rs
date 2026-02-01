@@ -83,6 +83,7 @@ async fn main() -> anyhow::Result<()> {
         vertex: vertex.clone(),
         quota_cache: gateway::manager::QuotaCache::new(),
         quota_pool: quota_pool.clone(),
+        data_dir: cfg.data_dir.clone(),
     });
 
     // === 公开路由（不需要认证）===
@@ -147,6 +148,10 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/manager/api/settings",
             post(gateway::manager::handle_settings_post),
+        )
+        .route(
+            "/manager/api/cache/cleanup",
+            post(gateway::manager::handle_cache_cleanup),
         )
         .with_state(manager_state.clone());
 

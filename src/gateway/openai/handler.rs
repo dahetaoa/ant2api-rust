@@ -473,15 +473,27 @@ async fn handle_stream_with_retry(
                 let raw_section = raw_section.clone();
                 async move {
                     for s in saves {
-                        sig_mgr
-                            .save_owned(
-                                s.request_id,
-                                s.tool_call_id,
-                                s.signature,
-                                s.reasoning,
-                                s.model,
-                            )
-                            .await;
+                        if s.is_image_key {
+                            sig_mgr
+                                .save_image_key(
+                                    s.request_id,
+                                    s.tool_call_id,
+                                    s.signature,
+                                    s.reasoning,
+                                    s.model,
+                                )
+                                .await;
+                        } else {
+                            sig_mgr
+                                .save_owned(
+                                    s.request_id,
+                                    s.tool_call_id,
+                                    s.signature,
+                                    s.reasoning,
+                                    s.model,
+                                )
+                                .await;
+                        }
                     }
                     for ev in events {
                         if client_log && raw_log {
