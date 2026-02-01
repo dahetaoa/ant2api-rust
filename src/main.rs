@@ -8,6 +8,7 @@ pub mod credential;
 pub mod error;
 pub mod gateway;
 pub mod logging;
+pub mod memory;
 pub mod quota_pool;
 pub mod runtime_config;
 pub mod signature;
@@ -29,6 +30,11 @@ async fn main() -> anyhow::Result<()> {
 
     // 初始化运行时配置
     runtime_config::init(&cfg);
+
+    // 可选：RSS 守护（Linux + jemalloc），通过 `RSS_GUARD_MAX_MB` 启用。
+    memory::spawn_rss_guard_from_env();
+    // 容器环境：定期对大文件做“丢弃页面缓存提示”（每 5 分钟一次）。
+    memory::spawn_page_cache_reclaimer(cfg.data_dir.clone());
 
     let store = Arc::new(credential::store::Store::new(cfg.clone()));
     if let Err(e) = store.load().await {

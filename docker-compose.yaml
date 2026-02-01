@@ -1,0 +1,40 @@
+services:
+  ant2api:
+    build:
+      # 从当前仓库构建镜像（需要使用你本地的代码改动时启用）
+      context: .
+      dockerfile: Dockerfile
+    image: dahetao/ant2api-rs:latest
+    container_name: ant2api-rs
+    ports:
+      # 端口映射：与 .env 的 PORT 保持一致
+      - "${PORT:-8045}:${PORT:-8045}"
+    environment:
+      # ===== 说明 =====
+      # 下面这些可配置项“必须与仓库根目录 .env 完全一致”（字段名、含义保持一致）
+      # 推荐做法：直接修改 .env，然后 `docker compose up -d`
+      HOST: "${HOST:-0.0.0.0}"
+      PORT: "${PORT:-8045}"
+      DATA_DIR: "${DATA_DIR:-./data}"
+      TIMEOUT: "${TIMEOUT:-180000}"
+      PROXY: "${PROXY:-}"
+
+      WEBUI_PASSWORD: "${WEBUI_PASSWORD}"
+      API_KEY: "${API_KEY:-}"
+
+      ENDPOINT_MODE: "${ENDPOINT_MODE:-daily}"
+      API_USER_AGENT: "${API_USER_AGENT:-antigravity/1.11.3 windows/amd64}"
+      GEMINI3_MEDIA_RESOLUTION: "${GEMINI3_MEDIA_RESOLUTION:-}"
+
+      RETRY_STATUS_CODES: "${RETRY_STATUS_CODES:-429,500}"
+      RETRY_MAX_ATTEMPTS: "${RETRY_MAX_ATTEMPTS:-3}"
+
+      DEBUG: "${DEBUG:-off}"
+      CACHE_RETENTION_DAYS: "${CACHE_RETENTION_DAYS:-7}"
+      # Jemalloc 配置（可用于更积极归还内存；如需启用 /debug/pprof/heap，请加入 prof:true）
+      MALLOC_CONF: "${MALLOC_CONF:-background_thread:true,dirty_decay_ms:0,muzzy_decay_ms:0,narenas:1}"
+    volumes:
+      # 数据目录挂载：与 DATA_DIR=./data 对应（容器内工作目录为 /app）
+      - ./data:/app/data
+      # 启用 jemalloc 内存分析 (pprof)
+      - /tmp:/tmp

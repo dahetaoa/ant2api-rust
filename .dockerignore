@@ -1,0 +1,7 @@
+.git
+.gitignore
+.env
+target
+data
+*.pb.gz
+*.log
