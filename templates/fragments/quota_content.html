@@ -6,26 +6,12 @@
         <div class="font-medium">无法获取配额</div>
         <div class="text-xs text-red-600/80 truncate" title="{{ error_msg }}">{{ error_msg }}</div>
     </div>
-    {% if !session_id.is_empty() %}
-    <button
-        class="shrink-0 px-3 py-1.5 text-xs font-medium bg-white border border-red-200 text-red-700 rounded-lg hover:bg-red-100 transition-colors"
-        hx-get="/manager/api/quota?id={{ session_id }}&force=1" hx-target="#quota-{{ session_id }}" hx-swap="innerHTML">
-        重试
-    </button>
-    {% endif %}
 </div>
 {% else if groups.is_empty() %}
 {# 空状态 #}
 <div
     class="py-3 px-4 bg-slate-50 border border-slate-200 rounded-xl text-sm text-slate-600 flex items-center justify-between gap-3">
     <span>暂无配额数据</span>
-    {% if !session_id.is_empty() %}
-    <button
-        class="px-3 py-1.5 text-xs font-medium bg-white border border-slate-200 text-slate-700 rounded-lg hover:bg-slate-50 transition-colors"
-        hx-get="/manager/api/quota?id={{ session_id }}&force=1" hx-target="#quota-{{ session_id }}" hx-swap="innerHTML">
-        重试
-    </button>
-    {% endif %}
 </div>
 {% else %}
 {# 配额列表 #}

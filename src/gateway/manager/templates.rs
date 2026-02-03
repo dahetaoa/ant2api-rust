@@ -6,7 +6,7 @@ use askama::Template;
 use chrono::DateTime;
 
 use crate::credential::types::Account;
-use crate::gateway::manager::quota::QuotaGroup;
+use crate::quota_pool::QuotaGroup;
 use crate::runtime_config::WebUISettings;
 
 /// 中国时区 (UTC+8)
@@ -266,4 +266,11 @@ pub struct QuotaSkeletonTemplate;
 #[template(path = "fragments/settings.html")]
 pub struct SettingsTemplate {
     pub settings: WebUISettings,
+}
+
+/// 模型设置页面片段（聊天测试 UI）
+#[derive(Template)]
+#[template(path = "fragments/model_settings.html")]
+pub struct ModelSettingsTemplate {
+    pub accounts: Vec<ViewAccount>,
 }

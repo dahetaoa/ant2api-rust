@@ -107,7 +107,8 @@ async fn to_vertex_contents(
         match m.role.as_str() {
             "system" => continue,
             "user" => {
-                let parts = extract_user_parts(&mut m.content, sig_mgr, is_gemini_pro_image).await?;
+                let parts =
+                    extract_user_parts(&mut m.content, sig_mgr, is_gemini_pro_image).await?;
                 out.push(Content {
                     role: "user".to_string(),
                     parts,

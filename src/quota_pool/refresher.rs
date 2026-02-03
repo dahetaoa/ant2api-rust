@@ -3,8 +3,8 @@
 use crate::config::Config;
 use crate::credential::store::Store;
 use crate::gateway::common::auth_retry::is_auth_failure;
-use crate::gateway::manager::quota::group_quota_groups;
 use crate::quota_pool::QuotaPoolManager;
+use crate::quota_pool::group_quota_groups;
 use crate::runtime_config;
 use crate::vertex::client::VertexClient;
 use std::collections::HashSet;
@@ -54,14 +54,6 @@ async fn refresh_once(
     }
     pool_mgr.sync_valid_sessions(&enabled_sessions).await;
 
-    let due = pool_mgr.due_cooldown_sessions().await;
-    if !due.is_empty() {
-        tracing::info!("配额池：发现 {} 个冷却到期账号，准备刷新", due.len());
-    }
-
-    let mut ok = 0usize;
-    let mut failed = 0usize;
-
     for acc in accounts {
         if !acc.enable {
             continue;
@@ -84,14 +76,13 @@ async fn refresh_once(
             Ok(resp) => {
                 let groups = group_quota_groups(&resp.models);
                 pool_mgr.update_from_quota(sid, &groups).await;
-                ok += 1;
+                tracing::info!("账号 {} 配额已更新", sid);
             }
             Err(e) => {
                 // 认证失败：触发后台刷新，但不阻塞配额刷新流程。
                 if is_auth_failure(&e) {
                     store.trigger_background_refresh(acc.session_id.clone(), cfg.clone());
                 }
-                failed += 1;
                 tracing::warn!(session_id = sid, error = ?e, "刷新账号配额失败");
             }
         }
@@ -100,6 +91,5 @@ async fn refresh_once(
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
 
-    tracing::info!("配额池后台刷新完成：成功 {ok}，失败 {failed}");
     Ok(())
 }

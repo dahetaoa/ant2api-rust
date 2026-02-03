@@ -8,5 +8,8 @@ mod refresher;
 mod selector;
 mod types;
 
+pub use manager::AccountQuota;
+pub use manager::QuotaGroup;
 pub use manager::QuotaPoolManager;
+pub(crate) use manager::{group_quota_groups, group_quota_key};
 pub use refresher::spawn_refresh_task;

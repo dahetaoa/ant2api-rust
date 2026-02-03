@@ -4,12 +4,10 @@
 //! - 登录/登出认证
 //! - Dashboard 账号管理
 //! - OAuth 流程支持
-//! - 配额查看与缓存
+//! - 配额查看
 //! - 系统设置管理
 
 pub mod handler;
-pub mod quota;
 pub mod templates;
 
 pub use handler::*;
-pub use quota::QuotaCache;

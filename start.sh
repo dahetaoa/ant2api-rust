@@ -47,6 +47,94 @@ log_error() {
     echo -e "${RED}[✗]${NC} $1"
 }
 
+# 交互式清屏模式资源（仅在 start_server_with_clear 中使用）
+CLEAR_LOG_FILE=""
+CLEAR_SERVER_PID=""
+CLEAR_TAIL_PID=""
+
+cleanup_clear_mode() {
+    if [[ -n "$CLEAR_TAIL_PID" ]]; then
+        kill "$CLEAR_TAIL_PID" 2>/dev/null || true
+        wait "$CLEAR_TAIL_PID" 2>/dev/null || true
+        CLEAR_TAIL_PID=""
+    fi
+    if [[ -n "$CLEAR_SERVER_PID" ]]; then
+        kill "$CLEAR_SERVER_PID" 2>/dev/null || true
+        wait "$CLEAR_SERVER_PID" 2>/dev/null || true
+        CLEAR_SERVER_PID=""
+    fi
+    if [[ -n "$CLEAR_LOG_FILE" && -f "$CLEAR_LOG_FILE" ]]; then
+        rm -f "$CLEAR_LOG_FILE" || true
+        CLEAR_LOG_FILE=""
+    fi
+}
+
+# 检测端口是否被占用（监听中）。
+port_is_listening() {
+    local port="$1"
+    if command -v ss &> /dev/null; then
+        ss -ltnH "sport = :$port" 2>/dev/null | grep -q .
+        return $?
+    fi
+    if command -v lsof &> /dev/null; then
+        lsof -nP -iTCP:"$port" -sTCP:LISTEN &> /dev/null
+        return $?
+    fi
+    return 1
+}
+
+# 尽量找出占用端口的 Docker 容器（如果有）。
+find_docker_containers_by_port() {
+    local port="$1"
+    if ! command -v docker &> /dev/null; then
+        return 0
+    fi
+    docker ps --format '{{.Names}}\t{{.Ports}}' 2>/dev/null | awk -v p=":$port->" -F'\t' '$2 ~ p {print $1}'
+}
+
+# 确保端口可用：若被占用则给出可操作的提示；若为 Docker 占用可选择停止容器。
+ensure_port_available() {
+    local port="$1"
+
+    if ! port_is_listening "$port"; then
+        return 0
+    fi
+
+    echo ""
+    log_warn "端口 $port 已被占用，无法启动本地服务"
+
+    # 优先判断是否为 docker-compose / docker 容器占用
+    local containers
+    containers="$(find_docker_containers_by_port "$port" | tr '\n' ' ' | xargs echo -n 2>/dev/null || true)"
+
+    if [[ -n "$containers" ]]; then
+        log_warn "检测到以下 Docker 容器占用该端口：$containers"
+        echo -e "  你可以：\n  1) 停止容器后启动本地服务（推荐）\n  2) 修改 PORT 环境变量（例如 PORT=8046）"
+        echo ""
+
+        # 仅在交互式终端下询问（避免脚本在 CI/后台卡住）
+        if [[ -t 0 ]]; then
+            read -p "是否现在停止这些容器并继续启动？(y/N): " stop_choice
+            if [[ "$stop_choice" =~ ^[Yy]$ ]]; then
+                docker stop $containers >/dev/null 2>&1 || true
+                log_success "已停止容器：$containers"
+                return 0
+            fi
+        fi
+
+        log_error "端口被 Docker 容器占用，已取消启动。请先 docker stop $containers 或设置 PORT 后重试。"
+        exit 1
+    fi
+
+    # 非 docker 场景：打印占用信息（最佳努力）
+    if command -v ss &> /dev/null; then
+        ss -ltnp "sport = :$port" 2>/dev/null || true
+    fi
+
+    log_error "端口被其他进程占用。请释放端口或设置 PORT=其他端口后重试。"
+    exit 1
+}
+
 # 加载 .env 文件
 load_env() {
     if [[ -f "$SCRIPT_DIR/.env" ]]; then
@@ -288,6 +376,8 @@ start_server() {
     local port="${PORT:-8045}"
     local host="${HOST:-0.0.0.0}"
 
+    ensure_port_available "$port"
+
     log_info "启动服务器（监听）: http://$host:$port"
     # 0.0.0.0 仅表示监听所有网卡，并不是可用于访问的目标地址
     log_info "本机访问建议: http://127.0.0.1:$port"
@@ -301,7 +391,49 @@ start_server() {
     #   prof_active:true  - 立即激活分析
     # 访问 /debug/pprof/heap 端点可获取内存快照
     export MALLOC_CONF="${MALLOC_CONF:-prof:true,lg_prof_sample:19,prof_active:true}"
+
+    # 仅在交互式终端启用清屏输入（避免 CI/后台卡住）
+    if [[ -t 0 && -t 1 ]]; then
+        start_server_with_clear "$@"
+        return $?
+    fi
+
     exec "$SERVER_BIN" "$@"
+}
+
+start_server_with_clear() {
+    CLEAR_LOG_FILE="$(mktemp -t ant2api-log.XXXXXX)"
+
+    # 先启动日志跟随，再启动服务，避免丢失初始日志
+    tail -n 200 -F "$CLEAR_LOG_FILE" &
+    CLEAR_TAIL_PID=$!
+
+    if command -v stdbuf &> /dev/null; then
+        stdbuf -oL -eL "$SERVER_BIN" "$@" </dev/null >> "$CLEAR_LOG_FILE" 2>&1 &
+    else
+        "$SERVER_BIN" "$@" </dev/null >> "$CLEAR_LOG_FILE" 2>&1 &
+    fi
+    CLEAR_SERVER_PID=$!
+
+    log_info "日志跟随中，输入 clear 后回车可清屏（Ctrl+C 退出）"
+
+    trap 'cleanup_clear_mode; exit 130' INT
+    trap 'cleanup_clear_mode; exit 143' TERM
+
+    while kill -0 "$CLEAR_SERVER_PID" 2>/dev/null; do
+        if IFS= read -r -t 0.2 cmd; then
+            if [[ "$cmd" == "clear" ]]; then
+                clear
+            elif [[ -n "$cmd" ]]; then
+                log_warn "未知命令: $cmd（输入 clear 清屏）"
+            fi
+        fi
+    done
+
+    local server_exit=0
+    wait "$CLEAR_SERVER_PID" || server_exit=$?
+    cleanup_clear_mode
+    return "$server_exit"
 }
 
 # =============================================================================

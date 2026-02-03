@@ -60,15 +60,8 @@ impl Manager {
         reasoning: String,
         model: String,
     ) {
-        self.save_owned_with_kind(
-            request_id,
-            tool_call_id,
-            false,
-            signature,
-            reasoning,
-            model,
-        )
-        .await;
+        self.save_owned_with_kind(request_id, tool_call_id, false, signature, reasoning, model)
+            .await;
     }
 
     pub async fn save_image_key(
@@ -79,15 +72,8 @@ impl Manager {
         reasoning: String,
         model: String,
     ) {
-        self.save_owned_with_kind(
-            request_id,
-            image_key,
-            true,
-            signature,
-            reasoning,
-            model,
-        )
-        .await;
+        self.save_owned_with_kind(request_id, image_key, true, signature, reasoning, model)
+            .await;
     }
 
     async fn save_owned_with_kind(

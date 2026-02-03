@@ -24,9 +24,7 @@ pub fn spawn_rss_guard_from_env() {
 
     #[cfg(not(all(target_os = "linux", not(target_env = "msvc"))))]
     {
-        tracing::warn!(
-            "已启用 RSS 守护，但当前平台不支持（需要 Linux + jemalloc）"
-        );
+        tracing::warn!("已启用 RSS 守护，但当前平台不支持（需要 Linux + jemalloc）");
     }
 }
 
@@ -68,7 +66,9 @@ mod linux {
 
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(interval);
-            let mut last_purge_at = Instant::now().checked_sub(cooldown).unwrap_or_else(Instant::now);
+            let mut last_purge_at = Instant::now()
+                .checked_sub(cooldown)
+                .unwrap_or_else(Instant::now);
 
             loop {
                 tick.tick().await;
@@ -147,7 +147,8 @@ mod linux {
                 tick.tick().await;
 
                 let dir = data_dir.clone();
-                let res = tokio::task::spawn_blocking(move || drop_signature_file_cache(&dir)).await;
+                let res =
+                    tokio::task::spawn_blocking(move || drop_signature_file_cache(&dir)).await;
                 match res {
                     Ok(Ok(())) => {}
                     Ok(Err(e)) => tracing::warn!("页面缓存回收失败: {e:#}"),
@@ -198,7 +199,9 @@ mod linux {
         // offset=0,len=0 => 整个文件。返回值为 errno（0 表示成功）。
         let ret = unsafe { libc::posix_fadvise(fd, 0, 0, libc::POSIX_FADV_DONTNEED) };
         if ret != 0 {
-            return Err(anyhow::anyhow!("posix_fadvise(DONTNEED) failed: errno={ret}"));
+            return Err(anyhow::anyhow!(
+                "posix_fadvise(DONTNEED) failed: errno={ret}"
+            ));
         }
         Ok(())
     }
@@ -213,8 +216,7 @@ mod jemalloc {
     pub fn purge_all() -> anyhow::Result<()> {
         // Best-effort：先 flush 当前线程 tcache（对大对象可能无效，但可减少小对象抖动）。
         unsafe {
-            mallctl_noargs(CStr::from_bytes_with_nul(b"thread.tcache.flush\\0").unwrap())
-                .ok();
+            mallctl_noargs(CStr::from_bytes_with_nul(b"thread.tcache.flush\\0").unwrap()).ok();
         }
 
         let narenas: u32 = unsafe {

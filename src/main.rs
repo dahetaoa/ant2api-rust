@@ -86,10 +86,9 @@ async fn main() -> anyhow::Result<()> {
     // Manager WebUI 状态
     let manager_state = Arc::new(gateway::manager::ManagerState {
         store: store.clone(),
-        vertex: vertex.clone(),
-        quota_cache: gateway::manager::QuotaCache::new(),
         quota_pool: quota_pool.clone(),
         data_dir: cfg.data_dir.clone(),
+        cfg: cfg.clone(),
     });
 
     // === 公开路由（不需要认证）===
@@ -158,6 +157,14 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/manager/api/cache/cleanup",
             post(gateway::manager::handle_cache_cleanup),
+        )
+        .route(
+            "/manager/api/model-settings",
+            get(gateway::manager::handle_model_settings_get),
+        )
+        .route(
+            "/manager/api/chat/test",
+            post(gateway::manager::handle_chat_test),
         )
         .with_state(manager_state.clone());
 

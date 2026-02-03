@@ -180,7 +180,9 @@ impl Store {
     }
 
     pub async fn migrate_entry_to_today(&self, entry: &Entry) {
-        if entry.request_id.is_empty() || entry.tool_call_id.is_empty() || entry.signature.is_empty()
+        if entry.request_id.is_empty()
+            || entry.tool_call_id.is_empty()
+            || entry.signature.is_empty()
         {
             return;
         }

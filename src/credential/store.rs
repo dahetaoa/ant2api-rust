@@ -1,8 +1,8 @@
 use crate::config::Config;
 use crate::credential::oauth;
 use crate::credential::types::Account;
-use crate::gateway::manager::quota::group_quota_key;
 use crate::quota_pool::QuotaPoolManager;
+use crate::quota_pool::group_quota_key;
 use crate::util::id;
 use anyhow::{Context, anyhow};
 use chrono::{Datelike, Utc};
@@ -489,6 +489,38 @@ impl Store {
         self.save().await
     }
 
+    /// 按 session_id 更新账号的 project_id（不改变 session_id）。
+    /// 返回值表示是否发生了修改并落盘。
+    pub async fn update_project_id_by_session_id(
+        &self,
+        session_id: &str,
+        project_id: &str,
+    ) -> anyhow::Result<bool> {
+        let session_id = session_id.trim();
+        let project_id = project_id.trim();
+        if session_id.is_empty() || project_id.is_empty() {
+            return Ok(false);
+        }
+
+        let mut changed = false;
+        {
+            let mut state = self.state.write().await;
+            let Some(acc) = state.accounts.iter_mut().find(|a| a.session_id == session_id) else {
+                return Ok(false);
+            };
+
+            if acc.project_id != project_id {
+                acc.project_id = project_id.to_string();
+                changed = true;
+            }
+        }
+
+        if changed {
+            self.save().await?;
+        }
+        Ok(changed)
+    }
+
     pub async fn refresh_account(&self, index: usize) -> anyhow::Result<()> {
         let mut account = {
             let state = self.state.read().await;
@@ -714,6 +746,27 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(out, RefreshSessionOutcome::SkippedDisabled);
+
+        let _ = tokio::fs::remove_dir_all(&data_dir).await;
+    }
+
+    #[tokio::test]
+    async fn update_project_id_by_session_id_updates_without_rotating_session() {
+        let data_dir = temp_data_dir();
+        let store = Store::new(test_cfg(data_dir.clone()));
+        store.add(expired_account("old")).await.unwrap();
+
+        let acc = store.get_token().await.unwrap();
+        let sid = acc.session_id.clone();
+
+        let changed = store
+            .update_project_id_by_session_id(&sid, "new-project")
+            .await
+            .unwrap();
+        assert!(changed);
+
+        let acc2 = store.get_token_by_project_id("new-project").await.unwrap();
+        assert_eq!(acc2.session_id, sid);
 
         let _ = tokio::fs::remove_dir_all(&data_dir).await;
     }
