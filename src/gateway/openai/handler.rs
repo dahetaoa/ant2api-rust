@@ -3,7 +3,10 @@ use super::stream::{StreamWriter, now_unix, sse_error_events};
 use super::types::ChatRequest;
 use crate::gateway::common::AccountContext;
 use crate::gateway::common::auth_retry::is_auth_failure;
-use crate::gateway::common::retry::should_retry_with_next_token;
+use crate::gateway::common::retry::{
+    MODEL_CAPACITY_EXHAUSTED_CLIENT_MESSAGE, MODEL_CAPACITY_EXHAUSTED_MAX_RETRIES,
+    should_retry_with_next_token,
+};
 use crate::logging;
 use crate::runtime_config;
 use crate::util::id;
@@ -263,6 +266,7 @@ pub async fn handle_chat_completions(
     let mut last_err: Option<ApiError> = None;
     let mut vresp = None;
     let mut used_sessions: HashSet<String> = HashSet::new();
+    let mut model_capacity_failures = 0usize;
 
     for _ in 0..attempts {
         let acc = match state
@@ -320,8 +324,16 @@ pub async fn handle_chat_completions(
                         .store
                         .trigger_background_refresh(session_id.clone(), state.cfg.clone());
                 }
+                if e.is_model_capacity_exhausted() {
+                    model_capacity_failures += 1;
+                } else {
+                    model_capacity_failures = 0;
+                }
                 let retry = should_retry_with_next_token(&e);
                 last_err = Some(e);
+                if model_capacity_failures >= MODEL_CAPACITY_EXHAUSTED_MAX_RETRIES {
+                    break;
+                }
                 if !retry {
                     break;
                 }
@@ -335,10 +347,17 @@ pub async fn handle_chat_completions(
             .and_then(|e| e.status())
             .and_then(|s| StatusCode::from_u16(s).ok())
             .unwrap_or(StatusCode::SERVICE_UNAVAILABLE);
-        let msg = last_err
+        let mut msg = last_err
             .as_ref()
             .map(|e| e.to_string())
             .unwrap_or_else(|| "后端请求失败".to_string());
+        if model_capacity_failures >= MODEL_CAPACITY_EXHAUSTED_MAX_RETRIES
+            && last_err
+                .as_ref()
+                .is_some_and(|e| e.is_model_capacity_exhausted())
+        {
+            msg = MODEL_CAPACITY_EXHAUSTED_CLIENT_MESSAGE.to_string();
+        }
         if log_level.client_enabled() {
             if log_level.raw_enabled() {
                 let body = openai_error_body(&msg);
@@ -389,6 +408,7 @@ async fn handle_stream_with_retry(
         let mut last_err: Option<ApiError> = None;
         let mut resp = None;
         let mut used_sessions: HashSet<String> = HashSet::new();
+        let mut model_capacity_failures = 0usize;
 
         for _ in 0..attempts {
             let acc = match state
@@ -443,8 +463,16 @@ async fn handle_stream_with_retry(
                             .store
                             .trigger_background_refresh(session_id.clone(), state.cfg.clone());
                     }
+                    if e.is_model_capacity_exhausted() {
+                        model_capacity_failures += 1;
+                    } else {
+                        model_capacity_failures = 0;
+                    }
                     let retry = should_retry_with_next_token(&e);
                     last_err = Some(e);
+                    if model_capacity_failures >= MODEL_CAPACITY_EXHAUSTED_MAX_RETRIES {
+                        break;
+                    }
                     if !retry {
                         break;
                     }
@@ -453,10 +481,17 @@ async fn handle_stream_with_retry(
         }
 
         let Some(resp) = resp else {
-            let msg = last_err
+            let mut msg = last_err
                 .as_ref()
                 .map(|e| e.to_string())
                 .unwrap_or_else(|| "后端请求失败".to_string());
+            if model_capacity_failures >= MODEL_CAPACITY_EXHAUSTED_MAX_RETRIES
+                && last_err
+                    .as_ref()
+                    .is_some_and(|e| e.is_model_capacity_exhausted())
+            {
+                msg = MODEL_CAPACITY_EXHAUSTED_CLIENT_MESSAGE.to_string();
+            }
             if client_log && !raw_log {
                 let err = openai_error_value(&msg);
                 logging::client_stream_response(

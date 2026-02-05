@@ -19,12 +19,14 @@ mod tests {
             message: "x".to_string(),
             retry_delay: Duration::ZERO,
             disable_token: false,
+            model_capacity_exhausted: false,
         };
         let err_403 = ApiError::Http {
             status: 403,
             message: "x".to_string(),
             retry_delay: Duration::ZERO,
             disable_token: false,
+            model_capacity_exhausted: false,
         };
 
         assert!(is_auth_failure(&err_401));

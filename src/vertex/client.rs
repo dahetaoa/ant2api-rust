@@ -2,7 +2,7 @@ use crate::config::Config;
 use crate::logging;
 use crate::vertex::types::{Request, Response};
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue, USER_AGENT};
-use sonic_rs::{JsonValueMutTrait, JsonValueTrait};
+use sonic_rs::{JsonContainerTrait, JsonValueMutTrait, JsonValueTrait};
 use std::collections::HashMap;
 use std::time::Duration;
 use thiserror::Error;
@@ -38,6 +38,7 @@ pub enum ApiError {
         message: String,
         retry_delay: Duration,
         disable_token: bool,
+        model_capacity_exhausted: bool,
     },
 
     #[error(transparent)]
@@ -67,6 +68,16 @@ impl ApiError {
             Self::Http { disable_token, .. } => *disable_token,
             _ => false,
         }
+    }
+
+    pub fn is_model_capacity_exhausted(&self) -> bool {
+        matches!(
+            self,
+            Self::Http {
+                model_capacity_exhausted: true,
+                ..
+            }
+        )
     }
 }
 
@@ -369,6 +380,7 @@ impl VertexClient {
             message: "未知错误".to_string(),
             retry_delay: Duration::ZERO,
             disable_token: false,
+            model_capacity_exhausted: false,
         }))
     }
 }
@@ -400,6 +412,8 @@ fn extract_error_details(status: u16, body: &[u8]) -> ApiError {
         #[serde(default)]
         message: String,
         #[serde(default)]
+        status: String,
+        #[serde(default)]
         details: Vec<ErrDetail>,
     }
 
@@ -409,17 +423,23 @@ fn extract_error_details(status: u16, body: &[u8]) -> ApiError {
         ty: String,
         #[serde(default)]
         retry_delay: String,
+        #[serde(default)]
+        reason: String,
+        #[serde(default)]
+        metadata: sonic_rs::Value,
     }
 
     let mut out_status = status;
     let mut message = "Unknown error".to_string();
     let mut retry_delay = Duration::ZERO;
     let mut disable_token = false;
+    let mut model_capacity_exhausted = false;
 
     if let Ok(err_resp) = sonic_rs::from_slice::<ErrResp>(body) {
-        message = err_resp.error.message;
+        let err = err_resp.error;
+        message = err.message;
 
-        if let Some(code) = err_resp.error.code {
+        if let Some(code) = err.code {
             if let Some(s) = code.as_str() {
                 let up = s.to_uppercase();
                 match up.as_str() {
@@ -443,7 +463,26 @@ fn extract_error_details(status: u16, body: &[u8]) -> ApiError {
             }
         }
 
-        for d in err_resp.error.details {
+        if out_status == 503
+            && err.status == "UNAVAILABLE"
+            && message.starts_with("No capacity available for model ")
+        {
+            for d in &err.details {
+                if d.ty == "type.googleapis.com/google.rpc.ErrorInfo"
+                    && d.reason == "MODEL_CAPACITY_EXHAUSTED"
+                    && d.metadata
+                        .as_object()
+                        .and_then(|m| m.get(&"model"))
+                        .and_then(|v| v.as_str())
+                        .is_some()
+                {
+                    model_capacity_exhausted = true;
+                    break;
+                }
+            }
+        }
+
+        for d in err.details {
             if d.ty.contains("RetryInfo")
                 && let Some(delay) = parse_retry_delay_seconds(&d.retry_delay)
             {
@@ -457,6 +496,7 @@ fn extract_error_details(status: u16, body: &[u8]) -> ApiError {
         message,
         retry_delay,
         disable_token,
+        model_capacity_exhausted,
     }
 }
 
@@ -469,4 +509,85 @@ fn parse_retry_delay_seconds(s: &str) -> Option<Duration> {
         return None;
     }
     Some(Duration::from_secs_f64(secs))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_error_details_marks_model_capacity_exhausted() {
+        let body = r#"{
+            "error": {
+                "code": 503,
+                "message": "No capacity available for model gemini-3-flash on the server",
+                "status": "UNAVAILABLE",
+                "details": [
+                    {
+                        "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                        "reason": "MODEL_CAPACITY_EXHAUSTED",
+                        "domain": "cloudcode-pa.googleapis.com",
+                        "metadata": {
+                            "model": "gemini-3-flash"
+                        }
+                    }
+                ]
+            }
+        }"#;
+
+        let err = extract_error_details(503, body.as_bytes());
+        assert_eq!(err.status(), Some(503));
+        assert!(err.is_model_capacity_exhausted());
+    }
+
+    #[test]
+    fn extract_error_details_requires_full_errorinfo_match() {
+        // reason 不匹配：不能被当作“模型过载”来处理。
+        let body = r#"{
+            "error": {
+                "code": 503,
+                "message": "No capacity available for model gemini-3-flash on the server",
+                "status": "UNAVAILABLE",
+                "details": [
+                    {
+                        "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                        "reason": "SOME_OTHER_REASON",
+                        "domain": "cloudcode-pa.googleapis.com",
+                        "metadata": {
+                            "model": "gemini-3-flash"
+                        }
+                    }
+                ]
+            }
+        }"#;
+
+        let err = extract_error_details(503, body.as_bytes());
+        assert_eq!(err.status(), Some(503));
+        assert!(!err.is_model_capacity_exhausted());
+    }
+
+    #[test]
+    fn extract_error_details_allows_other_domains() {
+        let body = r#"{
+            "error": {
+                "code": 503,
+                "message": "No capacity available for model gemini-3-flash on the server",
+                "status": "UNAVAILABLE",
+                "details": [
+                    {
+                        "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                        "reason": "MODEL_CAPACITY_EXHAUSTED",
+                        "domain": "some.other.domain",
+                        "metadata": {
+                            "model": "gemini-3-flash"
+                        }
+                    }
+                ]
+            }
+        }"#;
+
+        let err = extract_error_details(503, body.as_bytes());
+        assert_eq!(err.status(), Some(503));
+        assert!(err.is_model_capacity_exhausted());
+    }
 }
