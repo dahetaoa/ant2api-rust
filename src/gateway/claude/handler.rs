@@ -194,7 +194,7 @@ pub async fn handle_messages(
     }
 
     let endpoint = runtime_config::current_endpoint();
-    let req: MessagesRequest = match sonic_rs::from_slice(body.as_ref()) {
+    let mut req: MessagesRequest = match sonic_rs::from_slice(body.as_ref()) {
         Ok(v) => v,
         Err(_) => {
             if log_level.client_enabled() {
@@ -221,6 +221,9 @@ pub async fn handle_messages(
             );
         }
     };
+
+    // 模型 ID 映射：允许客户端使用自定义模型名，后端自动替换为原始模型名。
+    req.model = runtime_config::map_client_model_id(&req.model);
 
     let placeholder = AccountContext {
         project_id: id::project_id(),

@@ -7,15 +7,18 @@ use crate::gateway::common::retry::should_retry_with_next_token;
 use crate::logging;
 use crate::runtime_config;
 use crate::util::id;
+use crate::util::model as modelutil;
 use crate::vertex::client::ApiError;
 use axum::Json;
 use axum::body::Bytes;
 use axum::extract::OriginalUri;
+use axum::extract::Query;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::http::{HeaderMap, Method};
 use axum::response::sse::{Event, Sse};
 use axum::response::{IntoResponse, Response};
+use serde::Deserialize;
 use std::collections::HashSet;
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -26,11 +29,19 @@ use tokio_stream::wrappers::ReceiverStream;
 /// OpenAI 与 Claude 网关共享同一套后端转发状态（字段一致，避免路由层 state 类型冲突）。
 pub type OpenAIState = crate::gateway::claude::ClaudeState;
 
+#[derive(Debug, Default, Deserialize)]
+pub struct ModelsListQuery {
+    /// 返回“原始模型ID”（不应用 WebUI 映射），用于 WebUI 配置映射下拉列表。
+    #[serde(default)]
+    pub raw: bool,
+}
+
 pub async fn handle_list_models(
     State(state): State<Arc<OpenAIState>>,
     method: Method,
     uri: OriginalUri,
     headers: HeaderMap,
+    Query(query): Query<ModelsListQuery>,
 ) -> Response {
     let start = Instant::now();
     let log_level = state.cfg.log_level();
@@ -128,7 +139,21 @@ pub async fn handle_list_models(
         return openai_error(status, &msg);
     };
 
-    let out = to_models_response(&models);
+    let mut out = to_models_response(&models);
+    if !query.raw {
+        let inv = runtime_config::invert_model_id_mapping();
+        if !inv.is_empty() {
+            for item in out.data.iter_mut() {
+                let key = modelutil::canonical_model_id(&item.id);
+                if let Some(alias) = inv.get(&key) {
+                    item.id = alias.clone();
+                }
+            }
+            // 防止因不当映射产生重复模型 ID，导致客户端异常。
+            let mut seen: HashSet<String> = HashSet::with_capacity(out.data.len());
+            out.data.retain(|m| seen.insert(m.id.clone()));
+        }
+    }
     if log_level.client_enabled() {
         if log_level.raw_enabled() {
             if let Ok(bytes) = serde_json::to_vec(&out) {
@@ -186,6 +211,9 @@ pub async fn handle_chat_completions(
             );
         }
     };
+
+    // 模型 ID 映射：允许客户端使用自定义模型名，后端自动替换为原始模型名。
+    req.model = runtime_config::map_client_model_id(&req.model);
 
     let placeholder = AccountContext {
         project_id: id::project_id(),

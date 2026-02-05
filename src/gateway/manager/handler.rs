@@ -6,10 +6,11 @@ use axum::{
     Form, Json,
     extract::{OriginalUri, Query, State},
     http::{HeaderMap, Method, StatusCode, header},
-    response::{Html, IntoResponse, Redirect, Response},
     response::sse::{Event, Sse},
+    response::{Html, IntoResponse, Redirect, Response},
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Instant;
@@ -974,6 +975,57 @@ pub async fn handle_model_settings_get(
     Json(serde_json::json!({ "accounts": safe_accounts })).into_response()
 }
 
+/// 模型 ID 映射保存响应
+#[derive(Serialize)]
+struct ModelIdMappingSaveResponse {
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+/// GET /manager/api/model-id-mapping - 获取模型 ID 映射（JSON 对象：{alias: original}）
+pub async fn handle_model_id_mapping_get() -> Response {
+    let mapping = runtime_config::get_model_id_mapping();
+    Json(mapping.as_ref()).into_response()
+}
+
+/// POST /manager/api/model-id-mapping - 保存模型 ID 映射（JSON 对象：{alias: original}）
+pub async fn handle_model_id_mapping_post(
+    State(state): State<Arc<ManagerState>>,
+    Json(req): Json<HashMap<String, String>>,
+) -> Response {
+    let normalized = match runtime_config::validate_and_normalize_model_id_mapping(req) {
+        Ok(v) => v,
+        Err(e) => {
+            return Json(ModelIdMappingSaveResponse {
+                success: false,
+                error: Some(e),
+            })
+            .into_response();
+        }
+    };
+
+    if let Err(e) =
+        runtime_config::persist_model_id_mapping_to_data_dir(&state.data_dir, &normalized)
+    {
+        tracing::error!("保存模型 ID 映射失败: {e}");
+        return Json(ModelIdMappingSaveResponse {
+            success: false,
+            error: Some(e),
+        })
+        .into_response();
+    }
+
+    runtime_config::update_model_id_mapping(normalized);
+
+    Json(ModelIdMappingSaveResponse {
+        success: true,
+        error: None,
+    })
+    .into_response()
+}
+
 // ============================================================================
 // 聊天测试处理器
 // ============================================================================
@@ -1014,7 +1066,8 @@ pub async fn handle_chat_test(
     }
 
     let session_id = req.session_id.trim();
-    let model = req.model.trim();
+    let model_mapped = runtime_config::map_client_model_id(&req.model);
+    let model = model_mapped.trim();
     let provider = req.provider.trim().to_lowercase();
     let prompt = req.prompt.trim();
 
@@ -1052,7 +1105,7 @@ pub async fn handle_chat_test(
 
     let store = state.store.clone();
     let cfg = state.cfg.clone();
-    let model_owned = model.to_string();
+    let model_owned = model_mapped;
     let prompt_owned = prompt.to_string();
     let provider_owned = provider.to_string();
     let started_at_inner = started_at;
@@ -1125,7 +1178,8 @@ pub async fn handle_chat_test(
                 &mut merged_client_events,
                 client_log,
                 raw_log,
-                "缺少 projectId：请在账号管理中填写自定义项目ID（或重新 OAuth 添加账号）".to_string(),
+                "缺少 projectId：请在账号管理中填写自定义项目ID（或重新 OAuth 添加账号）"
+                    .to_string(),
             )
             .await;
             let _ = tx.send(Ok(Event::default().data("[DONE]"))).await;
@@ -1222,7 +1276,8 @@ pub async fn handle_chat_test(
             .http2_prior_knowledge();
 
         if cfg.timeout_ms > 0 {
-            client_builder = client_builder.timeout(std::time::Duration::from_millis(cfg.timeout_ms));
+            client_builder =
+                client_builder.timeout(std::time::Duration::from_millis(cfg.timeout_ms));
         }
         if !cfg.proxy.trim().is_empty() {
             match reqwest::Proxy::all(cfg.proxy.trim()) {
@@ -1281,7 +1336,10 @@ pub async fn handle_chat_test(
             header::HeaderValue::from_str(&format!("Bearer {}", account.access_token))
                 .unwrap_or_else(|_| header::HeaderValue::from_static("")),
         );
-        backend_headers.insert(header::CONTENT_TYPE, header::HeaderValue::from_static("application/json"));
+        backend_headers.insert(
+            header::CONTENT_TYPE,
+            header::HeaderValue::from_static("application/json"),
+        );
 
         if backend_log {
             if raw_log {
@@ -1402,11 +1460,7 @@ pub async fn handle_chat_test(
                             &mut merged_client_events,
                             client_log,
                             raw_log,
-                            format!(
-                                "HTTP {}: {}",
-                                status,
-                                String::from_utf8_lossy(&bytes)
-                            ),
+                            format!("HTTP {}: {}", status, String::from_utf8_lossy(&bytes)),
                         )
                         .await;
                         let _ = tx.send(Ok(Event::default().data("[DONE]"))).await;

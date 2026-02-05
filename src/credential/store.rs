@@ -505,7 +505,11 @@ impl Store {
         let mut changed = false;
         {
             let mut state = self.state.write().await;
-            let Some(acc) = state.accounts.iter_mut().find(|a| a.session_id == session_id) else {
+            let Some(acc) = state
+                .accounts
+                .iter_mut()
+                .find(|a| a.session_id == session_id)
+            else {
                 return Ok(false);
             };
 

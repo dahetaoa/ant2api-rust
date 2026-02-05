@@ -3,8 +3,475 @@
     <div class="flex items-center justify-between">
         <div>
             <h2 class="text-xl font-bold text-slate-800">模型设置</h2>
-            <p class="text-sm text-slate-500 mt-1">测试 API 接口，验证账号和模型是否正常工作</p>
+            <p class="text-sm text-slate-500 mt-1">配置模型 ID 映射并测试 API 接口，验证账号和模型是否正常工作</p>
         </div>
+    </div>
+
+    <!-- 模型 ID 映射 -->
+    <div class="bg-white rounded-xl border border-slate-100 overflow-hidden">
+        <div class="px-6 py-4 border-b border-slate-100 bg-slate-50/50 flex items-start justify-between gap-4">
+            <div>
+                <h3 class="font-semibold text-slate-800 flex items-center gap-2">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none"
+                        stroke="currentColor" stroke-width="2" class="text-violet-500">
+                        <path d="M17 3L21 7l-4 4" />
+                        <path d="M3 17l4 4 4-4" />
+                        <path d="M21 7H7a4 4 0 0 0-4 4v0" />
+                        <path d="M3 17h14a4 4 0 0 0 4-4v0" />
+                    </svg>
+                    模型 ID 映射
+                </h3>
+                <p class="text-xs text-slate-400 mt-1">
+                    保存后 <code class="bg-slate-100 px-1 py-0.5 rounded">/v1/models</code> 将返回自定义模型ID；客户端使用该ID请求时会自动替换为原始模型ID。
+                </p>
+            </div>
+            <div class="flex items-center gap-2">
+                <button type="button" id="model-mapping-template-btn"
+                    class="px-3 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors whitespace-nowrap">
+                    填入模板
+                </button>
+                <button type="button" id="model-mapping-save-btn"
+                    class="px-3 py-2 text-xs font-medium text-white bg-violet-500 border border-violet-500 rounded-lg hover:bg-violet-600 transition-colors whitespace-nowrap flex items-center gap-2">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none"
+                        stroke="currentColor" stroke-width="2">
+                        <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+                        <polyline points="17 21 17 13 7 13 7 21" />
+                        <polyline points="7 3 7 8 15 8" />
+                    </svg>
+                    <span>保存</span>
+                </button>
+            </div>
+        </div>
+        <div class="p-6 space-y-4">
+            <!-- Tabs -->
+            <div class="inline-flex rounded-lg bg-slate-100 p-1">
+                <button type="button" id="model-mapping-tab-visual"
+                    class="px-4 py-2 text-sm font-medium rounded-md bg-white text-slate-900 shadow-sm">
+                    可视化
+                </button>
+                <button type="button" id="model-mapping-tab-manual"
+                    class="px-4 py-2 text-sm font-medium rounded-md text-slate-600 hover:text-slate-800">
+                    手动编辑
+                </button>
+            </div>
+
+            <!-- Visual Panel -->
+            <div id="model-mapping-visual-panel" class="space-y-3">
+                <datalist id="original-model-id-datalist"></datalist>
+
+                <div id="model-mapping-rows" class="space-y-3"></div>
+
+                <div class="flex items-center justify-between gap-3">
+                    <button type="button" id="model-mapping-add-row-btn"
+                        class="px-4 py-2.5 text-sm font-medium text-blue-600 bg-blue-50 border border-blue-200 rounded-lg hover:bg-blue-100 transition-colors whitespace-nowrap flex items-center gap-2">
+                        <span class="text-lg leading-none">+</span>
+                        添加键值对
+                    </button>
+                    <div id="model-mapping-visual-status" class="text-xs text-slate-400"></div>
+                </div>
+
+                <p class="text-xs text-slate-400 pt-3 border-t border-slate-100">
+                    键为客户端请求中的模型ID，值为要替换的原始模型ID（右侧支持下拉选择项目原始模型ID，也可手动输入）。
+                </p>
+            </div>
+
+            <!-- Manual Panel -->
+            <div id="model-mapping-manual-panel" class="hidden space-y-2">
+                <textarea id="model-mapping-json-input" rows="10"
+                    class="w-full px-4 py-3 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-500 bg-white transition-all text-sm font-mono"
+                    placeholder="{\n  \"自定义模型ID\": \"原始模型ID\"\n}"></textarea>
+                <div class="flex items-center justify-between gap-3">
+                    <div id="model-mapping-json-status" class="text-xs text-slate-400"></div>
+                    <button type="button" id="model-mapping-format-btn"
+                        class="px-3 py-2 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors whitespace-nowrap">
+                        格式化
+                    </button>
+                </div>
+                <p class="text-xs text-slate-400">格式不正确将无法保存。</p>
+            </div>
+        </div>
+
+        <script>
+            (() => {
+                const toast = (message, type) => {
+                    document.body.dispatchEvent(new CustomEvent('showMessage', { detail: { message, type } }));
+                };
+
+                const tabVisualBtn = document.getElementById('model-mapping-tab-visual');
+                const tabManualBtn = document.getElementById('model-mapping-tab-manual');
+                const visualPanel = document.getElementById('model-mapping-visual-panel');
+                const manualPanel = document.getElementById('model-mapping-manual-panel');
+                const rowsEl = document.getElementById('model-mapping-rows');
+                const addRowBtn = document.getElementById('model-mapping-add-row-btn');
+                const saveBtn = document.getElementById('model-mapping-save-btn');
+                const templateBtn = document.getElementById('model-mapping-template-btn');
+                const formatBtn = document.getElementById('model-mapping-format-btn');
+                const jsonInput = document.getElementById('model-mapping-json-input');
+                const jsonStatus = document.getElementById('model-mapping-json-status');
+                const visualStatus = document.getElementById('model-mapping-visual-status');
+                const datalist = document.getElementById('original-model-id-datalist');
+
+                if (!rowsEl || !saveBtn) return;
+
+                let currentTab = 'visual';
+                let mappingState = {}; // last valid mapping
+                let manualValid = true;
+                let visualValid = true;
+
+                const normalizeId = (s) => {
+                    const v = (s || '').trim();
+                    return v.startsWith('models/') ? v.slice('models/'.length).trim() : v;
+                };
+
+                const setSaveEnabled = (enabled) => {
+                    saveBtn.disabled = !enabled;
+                    saveBtn.classList.toggle('opacity-50', !enabled);
+                    saveBtn.classList.toggle('cursor-not-allowed', !enabled);
+                };
+
+                const setJsonStatus = (msg, type) => {
+                    jsonStatus.textContent = msg || '';
+                    jsonStatus.className = 'text-xs ' + (type === 'error' ? 'text-red-600' : type === 'success' ? 'text-emerald-600' : 'text-slate-400');
+                };
+
+                const setVisualStatus = (msg, type) => {
+                    visualStatus.textContent = msg || '';
+                    visualStatus.className = 'text-xs ' + (type === 'error' ? 'text-red-600' : type === 'success' ? 'text-emerald-600' : 'text-slate-400');
+                };
+
+                const validateMappingObject = (obj) => {
+                    if (obj == null || typeof obj !== 'object' || Array.isArray(obj)) {
+                        return { ok: false, error: 'JSON 必须是对象（例如：{"A":"B"}）' };
+                    }
+
+                    const out = {};
+                    const usedValues = new Set();
+
+                    for (const [k, v] of Object.entries(obj)) {
+                        const key = normalizeId(k);
+                        const value = normalizeId(typeof v === 'string' ? v : '');
+
+                        if (!key) return { ok: false, error: '存在空的自定义模型ID（key）' };
+                        if (!value) return { ok: false, error: `模型 "${key}" 的原始模型ID（value）不能为空` };
+                        if (out[key] != null) return { ok: false, error: `自定义模型ID重复：\"${key}\"` };
+                        if (usedValues.has(value)) return { ok: false, error: `原始模型ID被重复映射：\"${value}\"` };
+
+                        usedValues.add(value);
+                        out[key] = value;
+                    }
+
+                    return { ok: true, mapping: out };
+                };
+
+                const readVisualMapping = () => {
+                    const rows = rowsEl.querySelectorAll('[data-model-mapping-row="1"]');
+                    const out = {};
+                    const usedValues = new Set();
+
+                    for (const row of rows) {
+                        const keyInput = row.querySelector('input[data-key="1"]');
+                        const valueInput = row.querySelector('input[data-value="1"]');
+                        const key = normalizeId(keyInput?.value || '');
+                        const value = normalizeId(valueInput?.value || '');
+
+                        if (!key && !value) continue; // ignore fully empty rows
+                        if (!key) return { ok: false, error: '存在未填写的自定义模型ID（key）' };
+                        if (!value) return { ok: false, error: `模型 \"${key}\" 的原始模型ID（value）不能为空` };
+                        if (out[key] != null) return { ok: false, error: `自定义模型ID重复：\"${key}\"` };
+                        if (usedValues.has(value)) return { ok: false, error: `原始模型ID被重复映射：\"${value}\"` };
+
+                        usedValues.add(value);
+                        out[key] = value;
+                    }
+
+                    return { ok: true, mapping: out };
+                };
+
+                const formatJson = (obj) => JSON.stringify(obj, null, 2);
+
+                const updateSaveState = () => {
+                    const enabled = currentTab === 'manual' ? manualValid : visualValid;
+                    setSaveEnabled(enabled);
+                };
+
+                const syncManualFromState = () => {
+                    if (!jsonInput) return;
+                    jsonInput.value = formatJson(mappingState || {});
+                    setJsonStatus('JSON 格式正确', 'success');
+                    manualValid = true;
+                };
+
+                const renderRow = (key = '', value = '') => {
+                    const row = document.createElement('div');
+                    row.setAttribute('data-model-mapping-row', '1');
+                    row.className = 'grid grid-cols-1 md:grid-cols-[1fr_1fr_auto] gap-2 items-stretch';
+
+                    const keyInput = document.createElement('input');
+                    keyInput.type = 'text';
+                    keyInput.value = key;
+                    keyInput.placeholder = '自定义模型ID（客户端使用）';
+                    keyInput.className = 'w-full px-4 py-2.5 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-500 bg-white transition-all text-sm font-mono';
+                    keyInput.setAttribute('data-key', '1');
+
+                    const valueInput = document.createElement('input');
+                    valueInput.type = 'text';
+                    valueInput.value = value;
+                    valueInput.placeholder = '原始模型ID（项目提供）';
+                    valueInput.className = 'w-full px-4 py-2.5 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-500 bg-white transition-all text-sm font-mono';
+                    valueInput.setAttribute('data-value', '1');
+                    valueInput.setAttribute('list', 'original-model-id-datalist');
+
+                    const delBtn = document.createElement('button');
+                    delBtn.type = 'button';
+                    delBtn.className = 'px-3 py-2.5 text-red-500 bg-red-50 border border-red-200 rounded-lg hover:bg-red-100 transition-colors flex items-center justify-center';
+                    delBtn.setAttribute('aria-label', '删除');
+                    delBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>';
+
+                    const onChange = () => {
+                        const res = readVisualMapping();
+                        if (!res.ok) {
+                            visualValid = false;
+                            setVisualStatus(res.error, 'error');
+                        } else {
+                            visualValid = true;
+                            mappingState = res.mapping;
+                            setVisualStatus(`共 ${Object.keys(mappingState).length} 条映射`, 'success');
+                            // 在可视化编辑时保持手动编辑内容同步（不会影响手动编辑时的输入）。
+                            if (currentTab === 'visual') {
+                                syncManualFromState();
+                            }
+                        }
+                        updateSaveState();
+                    };
+
+                    keyInput.addEventListener('input', onChange);
+                    valueInput.addEventListener('input', onChange);
+                    delBtn.addEventListener('click', () => {
+                        row.remove();
+                        onChange();
+                    });
+
+                    row.appendChild(keyInput);
+                    row.appendChild(valueInput);
+                    row.appendChild(delBtn);
+                    return row;
+                };
+
+                const renderVisualFromState = () => {
+                    rowsEl.innerHTML = '';
+                    const entries = Object.entries(mappingState || {});
+                    if (entries.length === 0) {
+                        rowsEl.appendChild(renderRow('', ''));
+                        setVisualStatus('未配置映射', 'info');
+                        return;
+                    }
+                    entries.forEach(([k, v]) => rowsEl.appendChild(renderRow(k, v)));
+                    setVisualStatus(`共 ${entries.length} 条映射`, 'success');
+                };
+
+                const setTab = (tab) => {
+                    if (tab === currentTab) return;
+                    // 若 JSON 无效，禁止从手动编辑切换到可视化（避免丢失上下文）。
+                    if (currentTab === 'manual' && !manualValid && tab === 'visual') {
+                        toast('JSON 格式不正确，无法切换到可视化', 'error');
+                        return;
+                    }
+                    currentTab = tab;
+                    if (tab === 'visual') {
+                        tabVisualBtn.className = 'px-4 py-2 text-sm font-medium rounded-md bg-white text-slate-900 shadow-sm';
+                        tabManualBtn.className = 'px-4 py-2 text-sm font-medium rounded-md text-slate-600 hover:text-slate-800';
+                        manualPanel.classList.add('hidden');
+                        visualPanel.classList.remove('hidden');
+                        renderVisualFromState();
+                        const res = readVisualMapping();
+                        visualValid = res.ok;
+                        if (!res.ok) setVisualStatus(res.error, 'error');
+                    } else {
+                        tabManualBtn.className = 'px-4 py-2 text-sm font-medium rounded-md bg-white text-slate-900 shadow-sm';
+                        tabVisualBtn.className = 'px-4 py-2 text-sm font-medium rounded-md text-slate-600 hover:text-slate-800';
+                        visualPanel.classList.add('hidden');
+                        manualPanel.classList.remove('hidden');
+                        syncManualFromState();
+                    }
+                    updateSaveState();
+                };
+
+                tabVisualBtn?.addEventListener('click', () => setTab('visual'));
+                tabManualBtn?.addEventListener('click', () => setTab('manual'));
+
+                addRowBtn?.addEventListener('click', () => {
+                    rowsEl.appendChild(renderRow('', ''));
+                    const res = readVisualMapping();
+                    visualValid = res.ok;
+                    if (!res.ok) setVisualStatus(res.error, 'error');
+                    updateSaveState();
+                });
+
+                const onManualInput = () => {
+                    const text = (jsonInput?.value || '').trim();
+                    if (!text) {
+                        mappingState = {};
+                        manualValid = true;
+                        setJsonStatus('空值将视为 {}', 'info');
+                        updateSaveState();
+                        return;
+                    }
+
+                    let parsed;
+                    try {
+                        parsed = JSON.parse(text);
+                    } catch (e) {
+                        manualValid = false;
+                        setJsonStatus('JSON 格式错误：' + (e?.message || '无法解析'), 'error');
+                        updateSaveState();
+                        return;
+                    }
+
+                    const res = validateMappingObject(parsed);
+                    if (!res.ok) {
+                        manualValid = false;
+                        setJsonStatus(res.error, 'error');
+                        updateSaveState();
+                        return;
+                    }
+
+                    mappingState = res.mapping;
+                    manualValid = true;
+                    setJsonStatus('JSON 格式正确', 'success');
+                    updateSaveState();
+                };
+
+                jsonInput?.addEventListener('input', onManualInput);
+
+                formatBtn?.addEventListener('click', () => {
+                    if (!manualValid) return;
+                    jsonInput.value = formatJson(mappingState || {});
+                    setJsonStatus('已格式化', 'success');
+                });
+
+                const refreshOriginalModels = async () => {
+                    try {
+                        const resp = await fetch('/v1/models?raw=true', { credentials: 'same-origin' });
+                        const data = await resp.json().catch(() => ({}));
+                        const list = (data?.data || []).map(m => m?.id).filter(Boolean);
+
+                        datalist.innerHTML = '';
+                        list.forEach(id => {
+                            const opt = document.createElement('option');
+                            opt.value = id;
+                            datalist.appendChild(opt);
+                        });
+
+                        if (list.length > 0) {
+                            setVisualStatus(`已加载 ${list.length} 个原始模型ID`, 'info');
+                        }
+                    } catch (e) {
+                        // 不阻塞：允许手动输入 value
+                    }
+                };
+
+                templateBtn?.addEventListener('click', async () => {
+                    try {
+                        const resp = await fetch('/v1/models?raw=true', { credentials: 'same-origin' });
+                        const data = await resp.json().catch(() => ({}));
+                        const list = (data?.data || []).map(m => m?.id).filter(Boolean);
+                        if (list.length === 0) throw new Error('模型列表为空');
+
+                        const tpl = {};
+                        list.forEach(id => {
+                            const k = normalizeId(id);
+                            tpl[k] = normalizeId(id);
+                        });
+
+                        mappingState = tpl;
+                        if (currentTab === 'manual') {
+                            syncManualFromState();
+                        } else {
+                            renderVisualFromState();
+                            const res = readVisualMapping();
+                            visualValid = res.ok;
+                            if (!res.ok) setVisualStatus(res.error, 'error');
+                            updateSaveState();
+                        }
+                        toast('已填入模板', 'success');
+                    } catch (e) {
+                        toast(e?.message || '填入模板失败', 'error');
+                    }
+                });
+
+                saveBtn?.addEventListener('click', async () => {
+                    let toSave = null;
+
+                    if (currentTab === 'manual') {
+                        onManualInput();
+                        if (!manualValid) return;
+                        toSave = mappingState || {};
+                    } else {
+                        const res = readVisualMapping();
+                        if (!res.ok) {
+                            toast(res.error || '映射格式不正确', 'error');
+                            return;
+                        }
+                        mappingState = res.mapping;
+                        toSave = mappingState || {};
+                    }
+
+                    saveBtn.disabled = true;
+                    const oldHtml = saveBtn.innerHTML;
+                    saveBtn.innerHTML = '<svg class="animate-spin" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg><span>保存中...</span>';
+
+                    try {
+                        const resp = await fetch('/manager/api/model-id-mapping', {
+                            method: 'POST',
+                            credentials: 'same-origin',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(toSave)
+                        });
+                        const data = await resp.json().catch(() => ({}));
+                        if (!resp.ok || !data?.success) {
+                            throw new Error(data?.error || '保存失败');
+                        }
+                        toast('模型 ID 映射已保存并生效', 'success');
+                    } catch (e) {
+                        toast(e?.message || '保存失败', 'error');
+                    } finally {
+                        saveBtn.disabled = false;
+                        saveBtn.innerHTML = oldHtml;
+                        updateSaveState();
+                    }
+                });
+
+                const init = async () => {
+                    // 1) 加载当前映射
+                    try {
+                        const resp = await fetch('/manager/api/model-id-mapping', { credentials: 'same-origin' });
+                        const data = await resp.json().catch(() => ({}));
+                        if (resp.ok) {
+                            const res = validateMappingObject(data || {});
+                            if (res.ok) mappingState = res.mapping;
+                        }
+                    } catch (e) {
+                        // ignore
+                    }
+
+                    // 2) 拉取原始模型ID列表，用于下拉建议
+                    await refreshOriginalModels();
+
+                    // 3) 渲染
+                    renderVisualFromState();
+                    syncManualFromState();
+
+                    // 4) 初始校验
+                    const res = readVisualMapping();
+                    visualValid = res.ok;
+                    if (!res.ok) setVisualStatus(res.error, 'error');
+                    onManualInput();
+                    updateSaveState();
+                };
+
+                init();
+            })();
+        </script>
     </div>
 
     <!-- 测试表单 -->

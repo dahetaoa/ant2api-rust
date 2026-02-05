@@ -4,11 +4,13 @@
 //! 使用 ArcSwap 实现无锁读取，写入时创建新的配置快照。
 
 use arc_swap::ArcSwap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 
 use crate::config::Config;
 use crate::logging::LogLevel;
+use crate::util::model as modelutil;
 
 pub const DEFAULT_BACKEND_HOST: &str = "cloudcode-pa.googleapis.com";
 pub const DAILY_BACKEND_HOST: &str = "daily-cloudcode-pa.sandbox.googleapis.com";
@@ -60,10 +62,20 @@ impl RuntimeSettings {
 /// 全局运行时配置存储。
 static RUNTIME_SETTINGS: std::sync::OnceLock<ArcSwap<RuntimeSettings>> = std::sync::OnceLock::new();
 
+const MODEL_ID_MAPPING_FILENAME: &str = "model_id_mapping.json";
+
+/// 模型 ID 映射（key = 客户端传入的模型ID，value = 实际转发使用的原始模型ID）。
+static MODEL_ID_MAPPING: std::sync::OnceLock<ArcSwap<HashMap<String, String>>> =
+    std::sync::OnceLock::new();
+
 /// 初始化运行时配置（在 main 中调用一次）。
 pub fn init(cfg: &Config) {
     let settings = RuntimeSettings::from_config(cfg);
     let _ = RUNTIME_SETTINGS.set(ArcSwap::from_pointee(settings));
+
+    // 初始化模型 ID 映射（用于 /v1/models 输出 + 请求模型名重写）。
+    let mapping = load_model_id_mapping_from_data_dir(&cfg.data_dir);
+    let _ = MODEL_ID_MAPPING.set(ArcSwap::from_pointee(mapping));
 }
 
 /// 获取当前运行时配置快照。
@@ -90,6 +102,119 @@ pub fn update(new_settings: RuntimeSettings) {
     if let Some(store) = RUNTIME_SETTINGS.get() {
         store.store(Arc::new(new_settings));
     }
+}
+
+/// 获取当前模型 ID 映射快照。
+pub fn get_model_id_mapping() -> Arc<HashMap<String, String>> {
+    MODEL_ID_MAPPING
+        .get()
+        .map(|s| s.load_full())
+        .unwrap_or_else(|| Arc::new(HashMap::new()))
+}
+
+/// 更新模型 ID 映射（立即生效）。
+pub fn update_model_id_mapping(new_mapping: HashMap<String, String>) {
+    if let Some(store) = MODEL_ID_MAPPING.get() {
+        store.store(Arc::new(new_mapping));
+    }
+}
+
+/// 将客户端请求的 model 映射为实际转发使用的原始 model。
+/// - 自动去掉 "models/" 前缀
+/// - 未命中映射则返回规范化后的原值
+pub fn map_client_model_id(model: &str) -> String {
+    let key = modelutil::canonical_model_id(model);
+    if key.is_empty() {
+        return key;
+    }
+    let mapping = get_model_id_mapping();
+    mapping
+        .get(&key)
+        .map(|v| modelutil::canonical_model_id(v))
+        .unwrap_or(key)
+}
+
+/// 构造反向映射：原始 model -> 自定义 model（用于 /v1/models 输出）。
+pub fn invert_model_id_mapping() -> HashMap<String, String> {
+    let mapping = get_model_id_mapping();
+    let mut inv = HashMap::with_capacity(mapping.len());
+    for (alias, original) in mapping.iter() {
+        inv.insert(modelutil::canonical_model_id(original), alias.clone());
+    }
+    inv
+}
+
+/// 规范化 + 校验模型映射（key/value 均要求非空字符串，且 value 不允许重复）。
+pub fn validate_and_normalize_model_id_mapping(
+    mapping: HashMap<String, String>,
+) -> Result<HashMap<String, String>, String> {
+    let mut out: HashMap<String, String> = HashMap::with_capacity(mapping.len());
+    let mut used_originals: HashSet<String> = HashSet::with_capacity(mapping.len());
+
+    for (k, v) in mapping {
+        let key = modelutil::canonical_model_id(&k);
+        let value = modelutil::canonical_model_id(&v);
+
+        if key.is_empty() {
+            return Err("存在空的自定义模型ID（key）".to_string());
+        }
+        if value.is_empty() {
+            return Err(format!("模型 \"{key}\" 的原始模型ID（value）不能为空"));
+        }
+        if out.contains_key(&key) {
+            return Err(format!("自定义模型ID重复：\"{key}\""));
+        }
+        if !used_originals.insert(value.clone()) {
+            return Err(format!("原始模型ID被重复映射：\"{value}\""));
+        }
+
+        out.insert(key, value);
+    }
+
+    Ok(out)
+}
+
+pub fn model_id_mapping_file_path(data_dir: &str) -> std::path::PathBuf {
+    Path::new(data_dir).join(MODEL_ID_MAPPING_FILENAME)
+}
+
+pub fn load_model_id_mapping_from_data_dir(data_dir: &str) -> HashMap<String, String> {
+    let path = model_id_mapping_file_path(data_dir);
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return HashMap::new();
+    };
+
+    let parsed = match serde_json::from_str::<HashMap<String, String>>(&text) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("模型 ID 映射文件解析失败（{}）：{e}", path.display());
+            return HashMap::new();
+        }
+    };
+
+    match validate_and_normalize_model_id_mapping(parsed) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("模型 ID 映射文件校验失败（{}）：{e}", path.display());
+            HashMap::new()
+        }
+    }
+}
+
+pub fn persist_model_id_mapping_to_data_dir(
+    data_dir: &str,
+    normalized_mapping: &HashMap<String, String>,
+) -> Result<(), String> {
+    let normalized = validate_and_normalize_model_id_mapping(normalized_mapping.clone())?;
+    let dir = Path::new(data_dir);
+    std::fs::create_dir_all(dir).map_err(|e| format!("无法创建数据目录 {}: {e}", dir.display()))?;
+
+    let path = model_id_mapping_file_path(data_dir);
+    let content =
+        serde_json::to_string_pretty(&normalized).map_err(|e| format!("序列化失败: {e}"))?;
+    std::fs::write(&path, format!("{content}\n"))
+        .map_err(|e| format!("无法写入 {}: {e}", path.display()))?;
+    Ok(())
 }
 
 /// WebUI 可编辑的设置（用于 JSON 序列化）。
@@ -413,5 +538,20 @@ mod tests {
         assert_eq!(format_env_line("KEY", "value"), "KEY=value");
         assert_eq!(format_env_line("KEY", "with space"), "KEY=\"with space\"");
         assert_eq!(format_env_line("KEY", ""), "KEY=\"\"");
+    }
+
+    #[test]
+    fn test_validate_and_normalize_model_id_mapping() {
+        let mut input = HashMap::new();
+        input.insert(" models/foo ".to_string(), " gpt-5 ".to_string());
+        input.insert("bar".to_string(), "claude-opus-4-5".to_string());
+        let out = validate_and_normalize_model_id_mapping(input).unwrap();
+        assert_eq!(out.get("foo").unwrap(), "gpt-5");
+        assert_eq!(out.get("bar").unwrap(), "claude-opus-4-5");
+
+        let mut dup_value = HashMap::new();
+        dup_value.insert("a".to_string(), "gpt-5".to_string());
+        dup_value.insert("b".to_string(), "gpt-5".to_string());
+        assert!(validate_and_normalize_model_id_mapping(dup_value).is_err());
     }
 }

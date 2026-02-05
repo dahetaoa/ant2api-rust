@@ -163,6 +163,14 @@ async fn main() -> anyhow::Result<()> {
             get(gateway::manager::handle_model_settings_get),
         )
         .route(
+            "/manager/api/model-id-mapping",
+            get(gateway::manager::handle_model_id_mapping_get),
+        )
+        .route(
+            "/manager/api/model-id-mapping",
+            post(gateway::manager::handle_model_id_mapping_post),
+        )
+        .route(
             "/manager/api/chat/test",
             post(gateway::manager::handle_chat_test),
         )
