@@ -15,6 +15,10 @@ pub const CLAUDE_THINKING_EFFORT_HIGH_TOKENS: i32 = DEFAULT_CLAUDE_THINKING_BUDG
 pub fn canonical_model_id(model: &str) -> String {
     let m = model.trim();
     let m = m.strip_prefix("models/").unwrap_or(m);
+    // 部分客户端会在 model 后拼接自定义后缀（例如 "claude-...-thinking/Antigravity"），
+    // 后端与内部识别均只需要主 model id，这里统一剥离后缀避免误判/传错后端。
+    let m = m.trim();
+    let m = m.split('/').next().unwrap_or(m);
     m.trim().to_string()
 }
 
@@ -267,6 +271,24 @@ pub fn thinking_config_from_openai(model: &str, reasoning_effort: &str) -> Optio
         thinking_level: effort,
         thinking_budget: 0,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn canonical_model_id_strips_suffix_after_slash() {
+        assert_eq!(
+            canonical_model_id("Claude-Opus-4-5-Thinking/Antigravity"),
+            "Claude-Opus-4-5-Thinking"
+        );
+    }
+
+    #[test]
+    fn is_claude_thinking_accepts_suffix_after_slash() {
+        assert!(is_claude_thinking("claude-opus-4-5-thinking/antigravity"));
+    }
 }
 
 pub fn thinking_config_from_claude(

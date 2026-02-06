@@ -124,7 +124,7 @@ async fn to_vertex_contents(
 
                 let (first_tool_sig, first_tool_reasoning) = if let Some(tc0) = m.tool_calls.first()
                 {
-                    match sig_mgr.lookup_by_tool_call_id(&tc0.id).await {
+                    match sig_mgr.lookup_by_tool_call_id_strict(&tc0.id).await {
                         Some(e) => (e.signature.trim().to_string(), e.reasoning),
                         None => (String::new(), String::new()),
                     }
@@ -204,8 +204,12 @@ async fn to_vertex_contents(
                     let args = parse_args(&tc.function.arguments);
                     let mut sig = String::new();
                     if is_gemini {
-                        if let Some(e) = sig_mgr.lookup_by_tool_call_id(&tc.id).await {
+                        if let Some(e) = sig_mgr.lookup_by_tool_call_id_strict(&tc.id).await {
                             sig = e.signature.trim().to_string();
+                        } else if i == 0 {
+                            // Gemini 兼容路径：首个 tool_call 缺签名时注入虚拟签名，
+                            // 避免后端因缺少 thoughtSignature 直接 400。
+                            sig = FALLBACK_SIGNATURE.to_string();
                         }
                         if i != 0 {
                             sig.clear();
@@ -376,7 +380,7 @@ async fn extract_user_parts(
                     String::new()
                 } else {
                     sig_mgr
-                        .lookup_by_image_key(&image_key)
+                        .lookup_by_image_key_strict(&image_key)
                         .await
                         .map(|e| e.signature)
                         .unwrap_or_else(|| {
@@ -547,7 +551,7 @@ async fn parse_markdown_images(
             String::new()
         } else {
             sig_mgr
-                .lookup_by_image_key(&image_key)
+                .lookup_by_image_key_strict(&image_key)
                 .await
                 .map(|e| e.signature)
                 .unwrap_or_else(|| {

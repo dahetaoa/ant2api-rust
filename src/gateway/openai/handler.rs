@@ -190,6 +190,21 @@ pub async fn handle_chat_completions(
     let mut req: ChatRequest = match sonic_rs::from_slice(body.as_ref()) {
         Ok(v) => v,
         Err(_) => {
+            // 兼容部分客户端：错误地向 OpenAI 端点发送 Claude /v1/messages 请求体。
+            // 这里尝试自动识别并转交 Claude handler，避免直接 400。
+            if sonic_rs::from_slice::<crate::gateway::claude::MessagesRequest>(body.as_ref()).is_ok()
+            {
+                return crate::gateway::claude::handle_messages_inner(
+                    state,
+                    method,
+                    uri,
+                    headers,
+                    body,
+                    false,
+                )
+                .await;
+            }
+
             if log_level.client_enabled() {
                 if log_level.raw_enabled() {
                     let msg = "请求 JSON 解析失败，请检查请求体格式。";

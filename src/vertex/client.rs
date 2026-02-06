@@ -1,5 +1,6 @@
 use crate::config::Config;
 use crate::logging;
+use crate::vertex::stream;
 use crate::vertex::types::{Request, Response};
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue, USER_AGENT};
 use sonic_rs::{JsonContainerTrait, JsonValueMutTrait, JsonValueTrait};
@@ -40,6 +41,9 @@ pub enum ApiError {
         disable_token: bool,
         model_capacity_exhausted: bool,
     },
+
+    #[error("Vertex 流式响应解析失败: {message}")]
+    StreamParse { message: String },
 
     #[error(transparent)]
     Transport(#[from] reqwest::Error),
@@ -175,52 +179,49 @@ impl VertexClient {
         req: &Request,
         email: &str,
     ) -> Result<Response, ApiError> {
-        let url = endpoint.no_stream_url();
-        self.with_retry(|| async {
-            let body = sonic_rs::to_vec(req)?;
-            let headers = self.build_headers(access_token, endpoint);
-            if self.log_level.backend_enabled() {
-                if self.log_level.raw_enabled() {
-                    logging::backend_request_raw("POST", &url, &headers, &body);
-                } else if let Ok(mut v) = sonic_rs::from_slice::<sonic_rs::Value>(&body) {
-                    if let Some(obj) = v.as_object_mut() {
-                        obj.insert("account", sonic_rs::Value::from(email));
-                        if let Ok(log_body) = sonic_rs::to_vec(&v) {
-                            logging::backend_request("POST", &url, &headers, &log_body);
-                        } else {
-                            logging::backend_request("POST", &url, &headers, &body);
-                        }
-                    } else {
-                        logging::backend_request("POST", &url, &headers, &body);
-                    }
-                } else {
-                    logging::backend_request("POST", &url, &headers, &body);
-                }
-            }
-            let start = std::time::Instant::now();
-            let resp = self
-                .http_stream
-                .post(url.clone())
-                .headers(headers)
-                .body(body)
-                .send()
-                .await?;
+        // 后端非流式接口 (/v1internal:generateContent) 不兼容本项目请求格式；
+        // 这里统一改为调用流式接口并缓冲完整 SSE 响应后再反序列化成非流 Response。
+        let started_at = std::time::Instant::now();
+        let backend_log = self.log_level.backend_enabled();
+        let raw_log = self.log_level.raw_enabled();
 
-            let status = resp.status();
-            let bytes = resp.bytes().await?;
-            if self.log_level.backend_enabled() {
-                if self.log_level.raw_enabled() {
-                    logging::backend_response_raw(status.as_u16(), start.elapsed(), &bytes);
-                } else {
-                    logging::backend_response(status.as_u16(), start.elapsed(), &bytes);
+        let resp = self
+            .generate_content_stream(endpoint, access_token, req, email)
+            .await?;
+
+        let backend_raw = backend_log && raw_log;
+        let parse_res = stream::parse_stream_with_result(
+            resp,
+            |_| async { Ok(()) },
+            true,
+            |line| {
+                if backend_raw {
+                    if line.starts_with(b"data:") || line.starts_with(b":") {
+                        logging::backend_stream_line_raw(line);
+                    }
                 }
+            },
+        )
+        .await;
+
+        let stream_result = match parse_res {
+            Ok(r) => r,
+            Err(e) => {
+                return Err(ApiError::StreamParse {
+                    message: e.source.to_string(),
+                });
             }
-            if !status.is_success() {
-                return Err(extract_error_details(status.as_u16(), &bytes));
-            }
-            Ok(sonic_rs::from_slice::<Response>(&bytes)?)
-        })
-        .await
+        };
+
+        let duration = started_at.elapsed();
+        if backend_log && !raw_log {
+            logging::backend_stream_response(200, duration, stream_result.merged_response.as_ref());
+        }
+
+        let merged = stream_result.merged_response.ok_or_else(|| ApiError::StreamParse {
+            message: "missing merged response".to_string(),
+        })?;
+        Ok(sonic_rs::from_value::<Response>(&merged)?)
     }
 
     pub async fn generate_content_stream(

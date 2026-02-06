@@ -148,6 +148,36 @@ impl Manager {
         }
         self.lookup_by_tool_call_id(image_key).await
     }
+
+    /// 严格查找：仅当签名真实存在时返回（不会注入 FALLBACK_SIGNATURE）。
+    pub async fn lookup_strict(&self, request_id: &str, tool_call_id: &str) -> Option<Entry> {
+        let idx = self.cache.get(request_id, tool_call_id).await?;
+        let e = self.store.load_by_index(&idx).await?;
+        let sig = e.signature.trim();
+        if sig.is_empty() || sig == FALLBACK_SIGNATURE {
+            return None;
+        }
+        Some(e)
+    }
+
+    /// 严格查找：仅当签名真实存在时返回（不会注入 FALLBACK_SIGNATURE）。
+    pub async fn lookup_by_tool_call_id_strict(&self, tool_call_id: &str) -> Option<Entry> {
+        let idx = self.cache.get_by_tool_call_id(tool_call_id).await?;
+        let e = self.store.load_by_index(&idx).await?;
+        let sig = e.signature.trim();
+        if sig.is_empty() || sig == FALLBACK_SIGNATURE {
+            return None;
+        }
+        Some(e)
+    }
+
+    /// 严格查找：仅当图片签名真实存在时返回（不会注入 FALLBACK_SIGNATURE）。
+    pub async fn lookup_by_image_key_strict(&self, image_key: &str) -> Option<Entry> {
+        if image_key.trim().is_empty() {
+            return None;
+        }
+        self.lookup_by_tool_call_id_strict(image_key).await
+    }
 }
 
 fn fallback_entry_from_index(idx: &EntryIndex) -> Entry {

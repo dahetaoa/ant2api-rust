@@ -80,7 +80,6 @@ where
             }
 
             if build_merged && let Ok(raw) = sonic_rs::from_slice::<sonic_rs::Value>(json_bytes) {
-                result.raw_chunks.push(raw.clone());
                 if let Some(usage) = raw
                     .get("response")
                     .and_then(|v| v.get("usageMetadata"))

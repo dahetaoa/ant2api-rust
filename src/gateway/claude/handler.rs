@@ -186,9 +186,20 @@ pub async fn handle_messages(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
+    handle_messages_inner(state, method, uri, headers, body, true).await
+}
+
+pub(crate) async fn handle_messages_inner(
+    state: Arc<ClaudeState>,
+    method: Method,
+    uri: OriginalUri,
+    headers: HeaderMap,
+    body: Bytes,
+    log_client_request: bool,
+) -> Response {
     let start = Instant::now();
     let log_level = state.cfg.log_level();
-    if log_level.client_enabled() {
+    if log_client_request && log_level.client_enabled() {
         if log_level.raw_enabled() {
             logging::client_request_raw(method.as_str(), uri.0.path(), &headers, body.as_ref());
         } else {
@@ -261,9 +272,7 @@ pub async fn handle_messages(
         };
 
     let model = req.model.clone();
-    let is_claude_model = modelutil::is_claude(&model);
-    // Claude 模型始终走流式，避免非流式路径产生不一致行为。
-    let is_stream = req.stream || is_claude_model;
+    let is_stream = req.stream;
     drop(req);
 
     let mut attempts = state.store.enabled_count().await;
